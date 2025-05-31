@@ -1,0 +1,4 @@
+{% extends "base.html" %} {% block content %}
+<h2>{{ page.title }}</h2>
+<p class="color-secondary date">{{ page.date | date(format="%d %B %Y") }} <span class="color-text">-</span> {{ page.reading_time }} minutes read</p>
+{{ page.content | safe }} {% endblock content %}

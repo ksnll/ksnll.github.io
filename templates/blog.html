@@ -1,0 +1,9 @@
+{% extends "base.html" %} {% block content %}
+  {% for page in section.pages %}
+  <article><a class="no-underline" href="{{ page.permalink | safe }}"><h2>{{ page.title }}</h2>
+<p class="color-secondary date">{{ page.date | date(format="%d %B %Y") }} <span class="color-text">-</span> {{ page.reading_time }} minutes read</p>
+<div class="no-underline color-text">{{ page.summary | safe }}</div>
+<p class="read-more">Read more...</p>
+</a></article>
+  {% endfor %}
+{% endblock content %}
