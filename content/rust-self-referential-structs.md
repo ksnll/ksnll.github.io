@@ -13,7 +13,7 @@ First of all, let's start with a simple example of why we might want to use this
 <!-- more -->
 
 Let's imagine we want to write a csv parser, but we want to avoid extra memory allocation. One way to do that could be to return pointers
-to the parsed fields, like so
+to the parsed fields, like so:
 
 ```rust
 use std::io::{self, BufRead};
