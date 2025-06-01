@@ -129,7 +129,7 @@ The original string is dropped, and the pointer is then dangling and pointing to
 We had to use unsafe to access this dangling pointer, as we cannot trust the memory address to be stable,
 and we want safeguards from the compiler, rather than relying on our ability to track and spot possible issues manually.
 
-Rust provides pinning via `std::pin::Pin`.
+This can be achieved via pinning with `std::pin::Pin`.
 `std::pin::Pin` is a wrapper in Rust's standard library that guarantees that the value inside the `Pin` will not be moved.
 When a value is pinned, with some caveats that we're gonna discuss shortly, you won't be able to get a mutable reference to the wrapped value, making it impossible to change the underlying memory.
 
