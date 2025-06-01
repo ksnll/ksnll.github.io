@@ -167,15 +167,25 @@ body {
 
 @media (min-device-width: 320px) and (max-device-width: 768px) {
   body {
+    font-size: 3em;
     max-width: 90%;
   }
   pre {
-    font-size: 2em;
+    font-size: 1.1em;
     line-height: 1.5em;
+    margin-left: -10px;
   }
   h2,
   h3 {
     line-height: 1.3em;
-    font-size: 3em;
+  }
+  .icon {
+    width: 90%;
+    margin: 20px auto;
+    width: 3em;
+    height: 3em;
+  }
+  .icons {
+    max-width: 100%;
   }
 }
