@@ -1,5 +1,6 @@
 body {
   font-family: "Gentium Book Basic", serif;
+  font-size: 1.2em;
   line-height: 1.5em;
   color: #333;
   background-color: #f8f8f8;
@@ -56,9 +57,8 @@ body {
 .Technical__list,
 .Language__list,
 .Interest__list {
-  padding-left: 0;
+  padding-left: 15px;
   margin: 0;
-  list-style-type: none;
 }
 
 .Header__img {
