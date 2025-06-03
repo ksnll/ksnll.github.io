@@ -1,0 +1,96 @@
+body {
+  font-family: "Gentium Book Basic", serif;
+  line-height: 1.5em;
+  color: #333;
+  background-color: #f8f8f8;
+}
+
+.App {
+  max-width: 800px;
+  display: -ms-flexbox;
+  display: flex;
+  -ms-flex-direction: column;
+  flex-direction: column;
+  margin: 0 auto;
+  padding: 0 40px 80px 40px;
+}
+
+.Experience {
+  margin-top: 30px;
+}
+
+.Header__name,
+.Experiences__title,
+.Educations__title,
+.Technicals__title,
+.Languages__title,
+.Interests__title {
+  font-family: "Open Sans", sans-serif;
+  font-weight: 800;
+  text-transform: uppercase;
+  font-size: 1.6em;
+  margin-top: 70px;
+  margin-bottom: 15px;
+}
+
+.Experience__role,
+.Experience__date {
+  display: -ms-flexbox;
+  display: flex;
+  -ms-flex-direction: row;
+  flex-direction: row;
+  font-weight: 600;
+}
+.Experience__role {
+  font-family: "Open Sans", sans-serif;
+  text-transform: uppercase;
+}
+
+.Experience__role > div,
+.Experience__date > div {
+  margin-right: 10px;
+}
+
+.Experience__list,
+.Education__list,
+.Technical__list,
+.Language__list,
+.Interest__list {
+  padding-left: 0;
+  margin: 0;
+  list-style-type: none;
+}
+
+.Header__img {
+  max-width: 280px;
+}
+
+.Technical__row {
+  display: -ms-flexbox;
+  display: flex;
+  margin-top: 20px;
+}
+.Technical__row > ul {
+  list-style-type: none;
+}
+.Technical__row > div {
+  min-width: 180px;
+}
+.Header__links {
+  margin-top: 15px;
+  display: flex;
+}
+
+.Header__links a {
+  padding-right: 20px;
+  color: #333;
+}
+.Header__links a:hover {
+  color: #aaa;
+}
+@media screen and (max-width: 850px) {
+  .Technical__row {
+    -ms-flex-direction: column;
+    flex-direction: column;
+  }
+}
