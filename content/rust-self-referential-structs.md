@@ -1,7 +1,7 @@
 +++
 title = "Self-referential structs in Rust"
 date = 2025-05-31
-description = Why self-referential structs are tricky in Rust, and how pinning, arenas and ouroboros can help you.
+description = "Why self-referential structs are tricky in Rust, and how pinning, arenas and ouroboros can help you."
 +++
 
 In Rust, there are a few paradigms that are more difficult to implement than in most other languages.
