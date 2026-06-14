@@ -10,10 +10,11 @@ build_search_index = false
 [markdown]
 
 [markdown.highlighting]
-# Zola 0.22 uses Giallo for syntax highlighting. `tokyo-night` is a built-in theme
-# close to the previous custom Enki Tokyo Night theme.
-theme = "tokyo-night"
+# Zola 0.22 uses Giallo for syntax highlighting. Keep the existing Enki Tokyo
+# Night colors by loading the theme as a JSON TextMate theme.
+theme = "Enki-Tokyo-Night"
 style = "inline"
+extra_themes = ["highlight_theme/Enki-Tokyo-Night.json"]
 
 [extra]
 # Put all your custom variables here
