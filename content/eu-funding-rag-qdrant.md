@@ -11,15 +11,11 @@ Each source is useful, but none of them maps directly to the way a normal person
 
 A user will not usually ask:
 
-```text
-Show me Horizon Europe Cluster 6 calls with destination FARM2FORK and eligible action type RIA.
-```
+> Show me Horizon Europe Cluster 6 calls with destination FARM2FORK and eligible action type RIA.
 
 They will ask something more like:
 
-```text
-We are a Cyprus-based SME building an AI tool that helps farmers detect crop disease from satellite and drone images. Is there any EU funding for this?
-```
+> We are a Cyprus-based SME building an AI tool that helps farmers detect crop disease from satellite and drone images. Is there any EU funding for this?
 
 This is the kind of problem where a RAG system can be useful.
 
@@ -210,16 +206,12 @@ But we still have another problem: the user may not use the same vocabulary as t
 
 Users describe their project in plain language:
 
-```text
-I have a startup doing satellite analytics for farms. Is there money for this?
-```
+> I have a startup doing satellite analytics for farms. Is there money for this?
 
 A call might use very different terms:
 
-```text
-Earth observation, Copernicus downstream services, precision farming,
-agri-food data spaces, digital technologies for sustainable agriculture.
-```
+> Earth observation, Copernicus downstream services, precision farming,
+> agri-food data spaces, digital technologies for sustainable agriculture.
 
 The user did not say `Copernicus`, `Earth observation` or `data spaces`.
 A vector search may still find the right thing, but it is not something I would rely on completely.
@@ -249,9 +241,7 @@ ${userQuestion}
 
 For the startup example, a rewritten query might be:
 
-```text
-SME startup satellite analytics agriculture precision farming Earth observation Copernicus agri-food digital technologies sustainable agriculture EU funding Cyprus
-```
+> SME startup satellite analytics agriculture precision farming Earth observation Copernicus agri-food digital technologies sustainable agriculture EU funding Cyprus
 
 In practice, I like to keep both:
 
@@ -475,15 +465,11 @@ This is less flashy than a confident answer, but it is much more useful.
 
 Let's imagine the user asks:
 
-```text
-We are a Cyprus-based SME building an AI system that detects crop disease from satellite and drone images. We have a prototype and want to know if there are EU funding opportunities in the next 6 months.
-```
+> We are a Cyprus-based SME building an AI system that detects crop disease from satellite and drone images. We have a prototype and want to know if there are EU funding opportunities in the next 6 months.
 
 The rewritten query might be:
 
-```text
-Cyprus SME AI crop disease detection satellite drone imagery precision agriculture Earth observation Copernicus digital farming innovation funding next 6 months
-```
+> Cyprus SME AI crop disease detection satellite drone imagery precision agriculture Earth observation Copernicus digital farming innovation funding next 6 months
 
 After searching Qdrant, grouping by opportunity, and reranking, the debug output could look like this:
 
@@ -521,52 +507,50 @@ After searching Qdrant, grouping by opportunity, and reranking, the debug output
 
 A good final answer could be:
 
-```text
-Short answer
-
-Yes, there are a few promising directions, but the best fit depends on whether you want to fund R&D, a pilot deployment, or partner discovery.
-
-Best matches
-
-1. Digital and data technologies for sustainable agriculture
-
-This looks like the strongest match because the scope mentions digital farming, data-driven agricultural tools and sustainability outcomes.
-
-Why it matches:
-- your project uses AI in agriculture
-- the use case is related to crop monitoring and precision farming
-- the opportunity is about digital technologies in the agri-food domain
-
-Checks:
-- verify whether a Cyprus SME can participate directly
-- verify whether a consortium is required
-- check the expected TRL range
-- deadline: 2025-09-18
-
-Source: Funding & Tenders Portal, call page URL from the retrieved source
-
-2. Copernicus downstream applications for agri-food and environmental monitoring
-
-This is relevant because the project uses satellite imagery and could fit an Earth observation or Copernicus downstream services angle.
-
-Checks:
-- confirm whether drone imagery is within scope or only satellite data is accepted
-- verify consortium requirements
-- check whether the call is for R&D or market deployment
-
-Source: Funding & Tenders Portal, call page URL from the retrieved source
-
-3. Similar KEEP.eu projects on precision farming and remote sensing
-
-These are not open calls, but they are useful for understanding what has been funded before and which organisations have worked in this space.
-
-Recommended next steps
-
-- shortlist calls where SMEs are explicitly eligible
-- check consortium requirements before spending time on a proposal
-- use KEEP.eu results to identify previous projects and potential partners
-- compare deadlines against the next 6 months
-```
+> Short answer
+>
+> Yes, there are a few promising directions, but the best fit depends on whether you want to fund R&D, a pilot deployment, or partner discovery.
+>
+> Best matches
+>
+> 1. Digital and data technologies for sustainable agriculture
+>
+> This looks like the strongest match because the scope mentions digital farming, data-driven agricultural tools and sustainability outcomes.
+>
+> Why it matches:
+> - your project uses AI in agriculture
+> - the use case is related to crop monitoring and precision farming
+> - the opportunity is about digital technologies in the agri-food domain
+>
+> Checks:
+> - verify whether a Cyprus SME can participate directly
+> - verify whether a consortium is required
+> - check the expected TRL range
+> - deadline: 2025-09-18
+>
+> Source: Funding & Tenders Portal, call page URL from the retrieved source
+>
+> 2. Copernicus downstream applications for agri-food and environmental monitoring
+>
+> This is relevant because the project uses satellite imagery and could fit an Earth observation or Copernicus downstream services angle.
+>
+> Checks:
+> - confirm whether drone imagery is within scope or only satellite data is accepted
+> - verify consortium requirements
+> - check whether the call is for R&D or market deployment
+>
+> Source: Funding & Tenders Portal, call page URL from the retrieved source
+>
+> 3. Similar KEEP.eu projects on precision farming and remote sensing
+>
+> These are not open calls, but they are useful for understanding what has been funded before and which organisations have worked in this space.
+>
+> Recommended next steps
+>
+> - shortlist calls where SMEs are explicitly eligible
+> - check consortium requirements before spending time on a proposal
+> - use KEEP.eu results to identify previous projects and potential partners
+> - compare deadlines against the next 6 months
 
 The important thing is that the answer is useful but cautious.
 
@@ -581,9 +565,7 @@ Metadata filters are not just an implementation detail. They are part of the use
 
 A user may ask:
 
-```text
-Show me open calls for SMEs in Cyprus.
-```
+> Show me open calls for SMEs in Cyprus.
 
 This should affect retrieval:
 
@@ -606,9 +588,7 @@ I am more careful hard-filtering by country or applicant type, because EU eligib
 
 For example, a call might say:
 
-```text
-Legal entities established in EU Member States and associated countries are eligible.
-```
+> Legal entities established in EU Member States and associated countries are eligible.
 
 If our metadata extraction did not normalize this correctly to `Cyprus`, a hard country filter could remove a relevant call.
 
@@ -662,17 +642,13 @@ The section name becomes important metadata.
 
 If the user asks:
 
-```text
-Can my SME apply?
-```
+> Can my SME apply?
 
 then chunks from `eligibility` should be preferred.
 
 If the user asks:
 
-```text
-Is this about agriculture?
-```
+> Is this about agriculture?
 
 then `scope` and `expected_outcome` are probably more useful.
 
@@ -712,16 +688,12 @@ Even better, claims should be traceable to a section.
 
 Bad:
 
-```text
-This call is relevant for AI agriculture projects.
-```
+> This call is relevant for AI agriculture projects.
 
 Better:
 
-```text
-This call is relevant because the scope mentions digital farming and data-driven agricultural tools.
-Source: Funding & Tenders Portal, Scope section, {source_url}
-```
+> This call is relevant because the scope mentions digital farming and data-driven agricultural tools.
+> Source: Funding & Tenders Portal, Scope section, {source_url}
 
 The payload should make that possible:
 
@@ -895,9 +867,7 @@ Vector search is useful, but funding discovery also needs metadata, filtering, g
 
 A good answer should say things like:
 
-```text
-This appears relevant, but you should verify consortium requirements and national eligibility rules.
-```
+> This appears relevant, but you should verify consortium requirements and national eligibility rules.
 
 That is not a weakness. That is the correct behavior.
 

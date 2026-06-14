@@ -99,6 +99,23 @@ p {
   margin-bottom: 25px;
 }
 
+blockquote {
+  background-color: var(--color-background-lighter);
+  border-left: 4px solid var(--color-primary);
+  border-radius: 8px;
+  margin: 0 0 2rem 0;
+  padding: 1rem;
+  overflow-wrap: anywhere;
+}
+
+blockquote p {
+  margin: 0 0 0.75rem 0;
+}
+
+blockquote p:last-child {
+  margin-bottom: 0;
+}
+
 a.no-underline {
   text-decoration: none;
 }
