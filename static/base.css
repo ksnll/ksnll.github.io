@@ -100,15 +100,32 @@ p {
 }
 
 blockquote {
-  background-color: var(--color-background-lighter);
-  border-left: 4px solid var(--color-primary);
-  border-radius: 8px;
-  margin: 0 0 2rem 0;
-  padding: 1rem;
+  position: relative;
+  background:
+    linear-gradient(135deg, rgba(116, 154, 234, 0.14), rgba(177, 147, 235, 0.08)),
+    var(--color-background-lighter);
+  border: 1px solid rgba(116, 154, 234, 0.32);
+  border-left: 5px solid var(--color-primary);
+  border-radius: 14px;
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.18);
+  margin: 0 0 1.75rem 0;
+  padding: 1rem 1.15rem 1rem 1.35rem;
   overflow-wrap: anywhere;
 }
 
+blockquote::before {
+  content: "\201C";
+  position: absolute;
+  top: -0.35rem;
+  right: 0.9rem;
+  color: rgba(177, 147, 235, 0.22);
+  font-family: Georgia, serif;
+  font-size: 4rem;
+  line-height: 1;
+}
+
 blockquote p {
+  position: relative;
   margin: 0 0 0.75rem 0;
 }
 
@@ -173,8 +190,17 @@ pre table {
   opacity: 0.8;
 }
 
+ul {
+  margin-top: 0.25rem;
+  margin-bottom: 1.5rem;
+}
+
 ul li {
-  margin-bottom: 25px;
+  margin-bottom: 0.45rem;
+}
+
+ul li:last-child {
+  margin-bottom: 0;
 }
 
 code:not(pre > code) {
