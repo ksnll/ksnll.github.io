@@ -250,6 +250,111 @@ In practice, I like to keep both:
 
 This makes the search less dependent on the user's vocabulary.
 
+### Rewrite into a project profile, not just a query
+
+In practice, I would not stop at a rewritten text query.
+
+For funding discovery, the rewrite step should also produce a structured project profile. The user's question usually hides important application logic: who is applying, where they are based, what kind of work they want to fund, how mature the project is, and which eligibility checks will matter later.
+
+For the agriculture example, the rewrite step could produce something like this:
+
+```json
+{
+  "sector": "agriculture",
+  "applicant_type": "SME",
+  "country": "Cyprus",
+  "technologies": ["AI", "satellite imagery", "drone imagery"],
+  "use_case": "crop disease detection",
+  "project_stage": "prototype",
+  "funding_need": ["R&D", "pilot deployment"],
+  "likely_eu_vocabulary": [
+    "precision agriculture",
+    "Earth observation",
+    "Copernicus downstream services",
+    "agri-food data spaces",
+    "digital technologies for sustainable agriculture"
+  ],
+  "eligibility_questions_to_check": [
+    "Is the call open to SMEs?",
+    "Is a consortium required?",
+    "Does the call fund R&D, deployment, advisory services or infrastructure?",
+    "Is Cyprus eligible directly or through EU Member State rules?",
+    "Does the expected TRL match a prototype-stage project?"
+  ]
+}
+```
+
+The important part is that the model is not inventing eligibility. It is extracting what the user said, adding cautious search vocabulary, and making the missing checks explicit.
+
+This becomes more useful when the rewrite logic is domain-aware. If the project is agricultural, the system may need to know whether it involves crops, livestock, irrigation, soil, farm machinery, pesticides, satellite data, drone data, greenhouses or food supply chains. If the project is manufacturing, it may matter whether it involves metals, plastics, robotics, energy efficiency, waste reduction, quality control or worker safety.
+
+A lightweight profile type could look like this:
+
+```ts
+type ProjectProfile = {
+    applicantType?:
+        | "SME"
+        | "university"
+        | "public_authority"
+        | "nonprofit"
+        | "large_company";
+    country?: string;
+    sector?:
+        | "agriculture"
+        | "manufacturing"
+        | "energy"
+        | "health"
+        | "education"
+        | "other";
+    technologies?: string[];
+    projectStage?: "idea" | "prototype" | "pilot" | "market_ready" | "scale_up";
+    fundingNeed?:
+        | "research"
+        | "pilot"
+        | "deployment"
+        | "training"
+        | "infrastructure";
+    domainSpecificSignals?: Record<string, string[]>;
+};
+```
+
+For an agriculture project:
+
+```json
+{
+  "sector": "agriculture",
+  "domainSpecificSignals": {
+    "crop_type": ["vineyards", "citrus", "open-field vegetables"],
+    "data_sources": ["satellite imagery", "drone imagery"],
+    "terrain_or_land_use": ["irrigated farmland", "greenhouse", "arid region"],
+    "outcomes": ["disease detection", "yield protection", "reduced pesticide use"]
+  }
+}
+```
+
+For a manufacturing project:
+
+```json
+{
+  "sector": "manufacturing",
+  "domainSpecificSignals": {
+    "materials": ["steel", "aluminium", "composites"],
+    "processes": ["CNC machining", "welding", "surface treatment"],
+    "outcomes": ["energy efficiency", "waste reduction", "automation", "quality control"]
+  }
+}
+```
+
+This profile can drive several later decisions:
+
+- which search terms to add
+- which metadata filters are safe
+- which candidate opportunities deserve a soft boost
+- which eligibility questions should appear in the final answer
+- which missing details should be asked from the user before they spend time applying
+
+This is the difference between a generic RAG search and a funding assistant that understands the shape of an application.
+
 ### Retrieve more than you need
 
 Another common mistake is retrieving exactly the number of chunks that you want to send to the model.
@@ -328,7 +433,24 @@ For EU funding, a good result should help answer:
 
 This is where a reranking step helps.
 
-You can use a dedicated reranker, but you can also start with an LLM-based reranker. The important part is to ask for a structured judgment and to keep it inspectable.
+In production, I would usually start with a dedicated reranking model or a cheaper scoring layer. A cross-encoder reranker, for example, can score candidate chunks or opportunity summaries much faster than asking a general-purpose LLM to judge every result.
+
+An LLM-based reranker is still useful during prototyping because it gives inspectable reasons. It helps debug whether the retrieved opportunities are actually useful, whether the project profile is being interpreted correctly, and which eligibility checks are driving the ranking.
+
+A practical pipeline could look like this:
+
+```text
+1. Vector search retrieves 50 chunks
+2. Group chunks by opportunity
+3. Apply metadata boosts and penalties
+4. Use a dedicated reranker over the top candidates
+5. Optionally run an async LLM judge for explanation and debugging
+6. Send only the final selected opportunities to the answer model
+```
+
+If the LLM judge is used in the user-facing path, it should run only on a small candidate set, and ideally asynchronously or behind caching. Otherwise the system will be slow and expensive.
+
+For prototyping, an LLM-based judge might look like this:
 
 ```ts
 const rerankPrompt = `
