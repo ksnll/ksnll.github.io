@@ -23,7 +23,9 @@ Not because the model knows EU funding. We actually do not want that. We want th
 
 <!-- more -->
 
-This also helps with one of the main problems with LLMs: hallucinations. If the model answers from its own training data, it can invent deadlines, eligibility conditions, budgets, or programmes that are no longer active. If we make retrieval, metadata and citations part of the system design, we can reduce that risk quite a lot.
+This also helps with one of the main problems with LLMs: hallucinations. If the model answers from its own training data, it can invent deadlines, eligibility conditions, budgets, or programmes that are no longer active. For funding discovery, I would not let the model answer from memory at all. It should answer from retrieved sources or say that the sources are not enough.
+
+Even then, citations are not magic. A model can still hallucinate while attaching a source link to the answer. The source has to support the specific claim being made. If the retrieved evidence does not contain the deadline, eligibility rule or programme detail, the answer should leave it out or mark it as missing.
 
 In this article, we'll look at the shape of a practical RAG system for EU funding discovery using Qdrant as the vector database.
 
@@ -249,6 +251,8 @@ In practice, I like to keep both:
 - the rewritten query, for retrieval
 
 This makes the search less dependent on the user's vocabulary.
+
+But the rewrite should not only be a prettier string that another LLM has to interpret later. If it can produce a structured object, the rest of the system can make deterministic decisions from it. For example, `status=open`, `country=Cyprus`, `applicant_type=SME`, `sector=agriculture`, and `funding_need=pilot` can drive filters, boosts, and eligibility checks directly. That removes a lot of prompt-dependent behavior from the retrieval path.
 
 ### Rewrite into a project profile, not just a query
 
@@ -543,6 +547,8 @@ A structured context works much better:
 Clear delimiters and explicit source structure are a simple way to improve the final answer.
 They also reduce hallucinations, because the model is less tempted to fill in missing fields from memory when the available fields are clearly defined.
 
+Still, source tags alone are not enough. The model should treat each source as evidence with boundaries, not as permission to complete the answer from memory. A citation is useful only if the cited text actually supports the sentence next to it.
+
 ### The final answer prompt
 
 The final prompt should be strict.
@@ -554,9 +560,10 @@ const answerPrompt = `
 You are helping users discover EU funding opportunities.
 
 Answer the user's question using only the information inside <sources>.
+Do not use general knowledge or memory to complete missing details.
 If the sources are not enough, say what is missing.
 Do not invent eligibility, deadlines, budgets, funding rates, or requirements.
-Cite the relevant source URL for each recommendation.
+Cite the relevant source URL for each recommendation, but only cite a source for claims it actually supports.
 
 <user_question>
 ${userQuestion}
@@ -719,6 +726,8 @@ So a practical approach is:
 - hard filter on things we trust, like `status`
 - soft boost applicant type and geography
 - make the final answer explain what needs to be checked
+
+This is also where I would be careful not to overbuild. If the database has a single canonical record per opportunity and the metadata is normalized well, explicit conflict detection may not add much. In many funding-discovery flows, reliable filters and source labels are enough. I would add conflict detection only when the system really ingests competing sources for the same fact, for example two deadlines for the same call or a programme page that disagrees with the portal.
 
 ### Chunking matters more than expected
 
