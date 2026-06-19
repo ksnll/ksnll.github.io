@@ -23,7 +23,9 @@ Not because the model knows EU funding. We actually do not want that. We want th
 
 <!-- more -->
 
-This also helps with one of the main problems with LLMs: hallucinations. If the model answers from its own training data, it can invent deadlines, eligibility conditions, budgets, or programmes that are no longer active. If we make retrieval, metadata and citations part of the system design, we can reduce that risk quite a lot.
+This also helps with one of the main problems with LLMs: hallucinations. If the model answers from its own training data, it can invent deadlines, eligibility conditions, budgets, or programmes that are no longer active. For funding discovery, I would not let the model answer from memory at all. It should answer from retrieved sources or say that the sources are not enough.
+
+Even then, citations are not magic. A model can still hallucinate while attaching a source link to the answer. The source has to support the specific claim being made. If the retrieved evidence does not contain the deadline, eligibility rule or programme detail, the answer should leave it out or mark it as missing.
 
 In this article, we'll look at the shape of a practical RAG system for EU funding discovery using Qdrant as the vector database.
 
@@ -250,6 +252,113 @@ In practice, I like to keep both:
 
 This makes the search less dependent on the user's vocabulary.
 
+But the rewrite should not only be a prettier string that another LLM has to interpret later. If it can produce a structured object, the rest of the system can make deterministic decisions from it. For example, `status=open`, `country=Cyprus`, `applicant_type=SME`, `sector=agriculture`, and `funding_need=pilot` can drive filters, boosts, and eligibility checks directly. That removes a lot of prompt-dependent behavior from the retrieval path.
+
+### Rewrite into a project profile, not just a query
+
+In practice, I would not stop at a rewritten text query.
+
+For funding discovery, the rewrite step should also produce a structured project profile. The user's question usually hides important application logic: who is applying, where they are based, what kind of work they want to fund, how mature the project is, and which eligibility checks will matter later.
+
+For the agriculture example, the rewrite step could produce something like this:
+
+```json
+{
+  "sector": "agriculture",
+  "applicant_type": "SME",
+  "country": "Cyprus",
+  "technologies": ["AI", "satellite imagery", "drone imagery"],
+  "use_case": "crop disease detection",
+  "project_stage": "prototype",
+  "funding_need": ["R&D", "pilot deployment"],
+  "likely_eu_vocabulary": [
+    "precision agriculture",
+    "Earth observation",
+    "Copernicus downstream services",
+    "agri-food data spaces",
+    "digital technologies for sustainable agriculture"
+  ],
+  "eligibility_questions_to_check": [
+    "Is the call open to SMEs?",
+    "Is a consortium required?",
+    "Does the call fund R&D, deployment, advisory services or infrastructure?",
+    "Is Cyprus eligible directly or through EU Member State rules?",
+    "Does the expected TRL match a prototype-stage project?"
+  ]
+}
+```
+
+The important part is that the model is not inventing eligibility. It is extracting what the user said, adding cautious search vocabulary, and making the missing checks explicit.
+
+This becomes more useful when the rewrite logic is domain-aware. If the project is agricultural, the system may need to know whether it involves crops, livestock, irrigation, soil, farm machinery, pesticides, satellite data, drone data, greenhouses or food supply chains. If the project is manufacturing, it may matter whether it involves metals, plastics, robotics, energy efficiency, waste reduction, quality control or worker safety.
+
+A lightweight profile type could look like this:
+
+```ts
+type ProjectProfile = {
+    applicantType?:
+        | "SME"
+        | "university"
+        | "public_authority"
+        | "nonprofit"
+        | "large_company";
+    country?: string;
+    sector?:
+        | "agriculture"
+        | "manufacturing"
+        | "energy"
+        | "health"
+        | "education"
+        | "other";
+    technologies?: string[];
+    projectStage?: "idea" | "prototype" | "pilot" | "market_ready" | "scale_up";
+    fundingNeed?:
+        | "research"
+        | "pilot"
+        | "deployment"
+        | "training"
+        | "infrastructure";
+    domainSpecificSignals?: Record<string, string[]>;
+};
+```
+
+For an agriculture project:
+
+```json
+{
+  "sector": "agriculture",
+  "domainSpecificSignals": {
+    "crop_type": ["vineyards", "citrus", "open-field vegetables"],
+    "data_sources": ["satellite imagery", "drone imagery"],
+    "terrain_or_land_use": ["irrigated farmland", "greenhouse", "arid region"],
+    "outcomes": ["disease detection", "yield protection", "reduced pesticide use"]
+  }
+}
+```
+
+For a manufacturing project:
+
+```json
+{
+  "sector": "manufacturing",
+  "domainSpecificSignals": {
+    "materials": ["steel", "aluminium", "composites"],
+    "processes": ["CNC machining", "welding", "surface treatment"],
+    "outcomes": ["energy efficiency", "waste reduction", "automation", "quality control"]
+  }
+}
+```
+
+This profile can drive several later decisions:
+
+- which search terms to add
+- which metadata filters are safe
+- which candidate opportunities deserve a soft boost
+- which eligibility questions should appear in the final answer
+- which missing details should be asked from the user before they spend time applying
+
+This is the difference between a generic RAG search and a funding assistant that understands the shape of an application.
+
 ### Retrieve more than you need
 
 Another common mistake is retrieving exactly the number of chunks that you want to send to the model.
@@ -328,7 +437,24 @@ For EU funding, a good result should help answer:
 
 This is where a reranking step helps.
 
-You can use a dedicated reranker, but you can also start with an LLM-based reranker. The important part is to ask for a structured judgment and to keep it inspectable.
+In production, I would usually start with a dedicated reranking model or a cheaper scoring layer. A cross-encoder reranker, for example, can score candidate chunks or opportunity summaries much faster than asking a general-purpose LLM to judge every result.
+
+An LLM-based reranker is still useful during prototyping because it gives inspectable reasons. It helps debug whether the retrieved opportunities are actually useful, whether the project profile is being interpreted correctly, and which eligibility checks are driving the ranking.
+
+A practical pipeline could look like this:
+
+```text
+1. Vector search retrieves 50 chunks
+2. Group chunks by opportunity
+3. Apply metadata boosts and penalties
+4. Use a dedicated reranker over the top candidates
+5. Optionally run an async LLM judge for explanation and debugging
+6. Send only the final selected opportunities to the answer model
+```
+
+If the LLM judge is used in the user-facing path, it should run only on a small candidate set, and ideally asynchronously or behind caching. Otherwise the system will be slow and expensive.
+
+For prototyping, an LLM-based judge might look like this:
 
 ```ts
 const rerankPrompt = `
@@ -421,6 +547,8 @@ A structured context works much better:
 Clear delimiters and explicit source structure are a simple way to improve the final answer.
 They also reduce hallucinations, because the model is less tempted to fill in missing fields from memory when the available fields are clearly defined.
 
+Still, source tags alone are not enough. The model should treat each source as evidence with boundaries, not as permission to complete the answer from memory. A citation is useful only if the cited text actually supports the sentence next to it.
+
 ### The final answer prompt
 
 The final prompt should be strict.
@@ -432,9 +560,10 @@ const answerPrompt = `
 You are helping users discover EU funding opportunities.
 
 Answer the user's question using only the information inside <sources>.
+Do not use general knowledge or memory to complete missing details.
 If the sources are not enough, say what is missing.
 Do not invent eligibility, deadlines, budgets, funding rates, or requirements.
-Cite the relevant source URL for each recommendation.
+Cite the relevant source URL for each recommendation, but only cite a source for claims it actually supports.
 
 <user_question>
 ${userQuestion}
@@ -597,6 +726,8 @@ So a practical approach is:
 - hard filter on things we trust, like `status`
 - soft boost applicant type and geography
 - make the final answer explain what needs to be checked
+
+This is also where I would be careful not to overbuild. If the database has a single canonical record per opportunity and the metadata is normalized well, explicit conflict detection may not add much. In many funding-discovery flows, reliable filters and source labels are enough. I would add conflict detection only when the system really ingests competing sources for the same fact, for example two deadlines for the same call or a programme page that disagrees with the portal.
 
 ### Chunking matters more than expected
 
