@@ -1,0 +1,849 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+
+    <title>Federico's Blog</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="A practical look at building a RAG system for EU funding discovery with Qdrant, structured metadata, reranking and grounded answers." />
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet" href="/base.css">
+  </head>
+  <body>
+    <main>
+      <a href="/" class="no-underline logo"><h3>Federico's blog</h3></a>
+      
+<h2>Building a RAG system for EU funding discovery</h2>
+<p class="color-secondary date">14 June 2026 <span class="color-text">-</span> 16 minutes read</p>
+<p>EU funding data is public, useful, and still surprisingly hard to search.</p>
+<p>The information is spread across different sources: the official EU Funding &amp; Tenders Portal, programme pages, PDFs, national contact points, and other datasets such as KEEP.eu.
+Each source is useful, but none of them maps directly to the way a normal person asks a question.</p>
+<p>A user will not usually ask:</p>
+<blockquote>
+<p>Show me Horizon Europe Cluster 6 calls with destination FARM2FORK and eligible action type RIA.</p>
+</blockquote>
+<p>They will ask something more like:</p>
+<blockquote>
+<p>We are a Cyprus-based SME building an AI tool that helps farmers detect crop disease from satellite and drone images. Is there any EU funding for this?</p>
+</blockquote>
+<p>This is the kind of problem where a RAG system can be useful.</p>
+<p>Not because the model knows EU funding. We actually do not want that. We want the model to search the right source material, reason over it, and produce an answer grounded in the data we indexed.</p>
+<span id="continue-reading"></span>
+<p>This also helps with one of the main problems with LLMs: hallucinations. If the model answers from its own training data, it can invent deadlines, eligibility conditions, budgets, or programmes that are no longer active. For funding discovery, I would not let the model answer from memory at all. It should answer from retrieved sources or say that the sources are not enough.</p>
+<p>Even then, citations are not magic. A model can still hallucinate while attaching a source link to the answer. The source has to support the specific claim being made. If the retrieved evidence does not contain the deadline, eligibility rule or programme detail, the answer should leave it out or mark it as missing.</p>
+<p>In this article, we'll look at the shape of a practical RAG system for EU funding discovery using Qdrant as the vector database.</p>
+<p>The goal is not to build a demo that works on one nice query. The goal is to design something that survives the messy parts:</p>
+<ul>
+<li>funding opportunities come from multiple datasets</li>
+<li>calls are long and full of formal language</li>
+<li>eligibility is often hidden in PDFs</li>
+<li>deadlines and budgets matter</li>
+<li>users ask vague questions</li>
+<li>similar text is not always the same as relevant opportunity</li>
+<li>unsupported answers are dangerous</li>
+</ul>
+<p>Let's start with the simplest version and then improve it step by step.</p>
+<h3 id="the-naive-version">The naive version</h3>
+<p>The first version of a RAG system is usually something like this:</p>
+<ol>
+<li>Split all documents into chunks</li>
+<li>Embed each chunk</li>
+<li>Store the embeddings in a vector database</li>
+<li>Embed the user question</li>
+<li>Retrieve the closest chunks</li>
+<li>Send them to an LLM</li>
+<li>Ask the LLM to answer</li>
+</ol>
+<p>In code, it could look like this:</p>
+<pre class="giallo" style="color: #AFBAD4; background-color: #1D1F29;"><code data-lang="typescript"><span class="giallo-l"><span style="color: #9D7CD8;font-style: italic;">const</span><span style="color: #BB9AF7;"> query</span><span style="color: #89DDFF;"> = &quot;</span><span style="color: #9ECE6A;">Are there EU grants for AI tools in agriculture?</span><span style="color: #89DDFF;">&quot;;</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #9D7CD8;font-style: italic;">const</span><span style="color: #BB9AF7;"> queryEmbedding</span><span style="color: #89DDFF;"> =</span><span style="color: #BB9AF7;font-style: italic;"> await</span><span style="color: #7AA2F7;"> embed</span><span style="color: #9ABDF5;">(</span><span style="color: #C0CAF5;">query</span><span style="color: #9ABDF5;">)</span><span style="color: #89DDFF;">;</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #9D7CD8;font-style: italic;">const</span><span style="color: #BB9AF7;"> results</span><span style="color: #89DDFF;"> =</span><span style="color: #BB9AF7;font-style: italic;"> await</span><span style="color: #C0CAF5;"> qdrant</span><span style="color: #89DDFF;">.</span><span style="color: #7AA2F7;">search</span><span style="color: #9ABDF5;">(</span><span style="color: #89DDFF;">&quot;</span><span style="color: #9ECE6A;">funding_chunks</span><span style="color: #89DDFF;">&quot;,</span><span style="color: #9ABDF5;"> {</span></span>
+<span class="giallo-l"><span style="color: #73DACA;">    vector</span><span style="color: #89DDFF;">:</span><span style="color: #C0CAF5;"> queryEmbedding</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #73DACA;">    limit</span><span style="color: #89DDFF;">:</span><span style="color: #FF9E64;"> 10</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">})</span><span style="color: #89DDFF;">;</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #9D7CD8;font-style: italic;">const</span><span style="color: #BB9AF7;"> answer</span><span style="color: #89DDFF;"> =</span><span style="color: #BB9AF7;font-style: italic;"> await</span><span style="color: #C0CAF5;"> claude</span><span style="color: #89DDFF;">.</span><span style="color: #7DCFFF;">messages</span><span style="color: #89DDFF;">.</span><span style="color: #7AA2F7;">create</span><span style="color: #9ABDF5;">({</span></span>
+<span class="giallo-l"><span style="color: #73DACA;">    model</span><span style="color: #89DDFF;">: &quot;</span><span style="color: #9ECE6A;">claude-sonnet-4-5</span><span style="color: #89DDFF;">&quot;,</span></span>
+<span class="giallo-l"><span style="color: #73DACA;">    max_tokens</span><span style="color: #89DDFF;">:</span><span style="color: #FF9E64;"> 1200</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #73DACA;">    messages</span><span style="color: #89DDFF;">:</span><span style="color: #9ABDF5;"> [</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">        {</span></span>
+<span class="giallo-l"><span style="color: #73DACA;">            role</span><span style="color: #89DDFF;">: &quot;</span><span style="color: #9ECE6A;">user</span><span style="color: #89DDFF;">&quot;,</span></span>
+<span class="giallo-l"><span style="color: #73DACA;">            content</span><span style="color: #89DDFF;">: `</span></span>
+<span class="giallo-l"><span style="color: #9ECE6A;">Answer the question using these documents:</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #7DCFFF;">${</span><span style="color: #C0CAF5;">results</span><span style="color: #89DDFF;">.</span><span style="color: #7AA2F7;">map</span><span style="color: #9ABDF5;">((</span><span style="color: #E0AF68;">r</span><span style="color: #9ABDF5;">)</span><span style="color: #BB9AF7;font-style: italic;"> =&gt;</span><span style="color: #C0CAF5;"> r</span><span style="color: #89DDFF;">.</span><span style="color: #C0CAF5;">payload</span><span style="color: #89DDFF;">.</span><span style="color: #7DCFFF;">text</span><span style="color: #9ABDF5;">)</span><span style="color: #89DDFF;">.</span><span style="color: #7AA2F7;">join</span><span style="color: #9ABDF5;">(</span><span style="color: #89DDFF;">&quot;\n\n&quot;</span><span style="color: #9ABDF5;">)</span><span style="color: #7DCFFF;">}</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #9ECE6A;">Question: </span><span style="color: #7DCFFF;">${</span><span style="color: #C0CAF5;">query</span><span style="color: #7DCFFF;">}</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">            `,</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">        }</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">    ]</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">})</span><span style="color: #89DDFF;">;</span></span></code></pre>
+<p>This works surprisingly well for a demo.</p>
+<p>It also breaks quite quickly.</p>
+<p>The first problem is that EU funding discovery is not just a semantic similarity problem.
+If someone asks for funding for an AI agriculture project, we need to consider at least:</p>
+<ul>
+<li>topic fit</li>
+<li>applicant type</li>
+<li>geography</li>
+<li>call status</li>
+<li>deadline</li>
+<li>funding instrument</li>
+<li>consortium requirements</li>
+<li>budget</li>
+<li>TRL level</li>
+<li>whether the call funds research, deployment, training, infrastructure, or innovation</li>
+</ul>
+<p>A chunk that says <code>artificial intelligence in agriculture</code> may be semantically close, but useless if the call closed two years ago or if only public authorities can apply.</p>
+<p>So we need to model the data more explicitly.</p>
+<h3 id="store-chunks-but-do-not-lose-the-call">Store chunks, but do not lose the call</h3>
+<p>A common mistake is to treat chunks as the only unit of retrieval.</p>
+<p>For EU funding this is not enough. We need chunks for semantic search, but we also need the parent opportunity as a first-class object.</p>
+<p>For example, we might have a schema like this:</p>
+<pre class="giallo" style="color: #AFBAD4; background-color: #1D1F29;"><code data-lang="typescript"><span class="giallo-l"><span style="color: #BB9AF7;">type</span><span style="color: #C0CAF5;"> FundingOpportunity</span><span style="color: #89DDFF;"> =</span><span style="color: #9ABDF5;"> {</span></span>
+<span class="giallo-l"><span style="color: #73DACA;">    id</span><span style="color: #89DDFF;">:</span><span style="color: #0DB9D7;"> string</span><span style="color: #89DDFF;">;</span></span>
+<span class="giallo-l"><span style="color: #73DACA;">    title</span><span style="color: #89DDFF;">:</span><span style="color: #0DB9D7;"> string</span><span style="color: #89DDFF;">;</span></span>
+<span class="giallo-l"><span style="color: #73DACA;">    source</span><span style="color: #89DDFF;">: &quot;</span><span style="color: #9ECE6A;">funding_tenders</span><span style="color: #89DDFF;">&quot; | &quot;</span><span style="color: #9ECE6A;">keep_eu</span><span style="color: #89DDFF;">&quot; | &quot;</span><span style="color: #9ECE6A;">programme_page</span><span style="color: #89DDFF;">&quot; | &quot;</span><span style="color: #9ECE6A;">manual</span><span style="color: #89DDFF;">&quot;;</span></span>
+<span class="giallo-l"><span style="color: #73DACA;">    programme</span><span style="color: #89DDFF;">?:</span><span style="color: #0DB9D7;"> string</span><span style="color: #89DDFF;">;</span></span>
+<span class="giallo-l"><span style="color: #73DACA;">    topicCode</span><span style="color: #89DDFF;">?:</span><span style="color: #0DB9D7;"> string</span><span style="color: #89DDFF;">;</span></span>
+<span class="giallo-l"><span style="color: #73DACA;">    status</span><span style="color: #89DDFF;">?: &quot;</span><span style="color: #9ECE6A;">open</span><span style="color: #89DDFF;">&quot; | &quot;</span><span style="color: #9ECE6A;">upcoming</span><span style="color: #89DDFF;">&quot; | &quot;</span><span style="color: #9ECE6A;">closed</span><span style="color: #89DDFF;">&quot;;</span></span>
+<span class="giallo-l"><span style="color: #73DACA;">    deadline</span><span style="color: #89DDFF;">?:</span><span style="color: #0DB9D7;"> string</span><span style="color: #89DDFF;">;</span></span>
+<span class="giallo-l"><span style="color: #73DACA;">    budget</span><span style="color: #89DDFF;">?:</span><span style="color: #0DB9D7;"> string</span><span style="color: #89DDFF;">;</span></span>
+<span class="giallo-l"><span style="color: #73DACA;">    countries</span><span style="color: #89DDFF;">?:</span><span style="color: #0DB9D7;"> string</span><span style="color: #9ABDF5;">[]</span><span style="color: #89DDFF;">;</span></span>
+<span class="giallo-l"><span style="color: #73DACA;">    applicantTypes</span><span style="color: #89DDFF;">?:</span><span style="color: #0DB9D7;"> string</span><span style="color: #9ABDF5;">[]</span><span style="color: #89DDFF;">;</span></span>
+<span class="giallo-l"><span style="color: #73DACA;">    url</span><span style="color: #89DDFF;">:</span><span style="color: #0DB9D7;"> string</span><span style="color: #89DDFF;">;</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">}</span><span style="color: #89DDFF;">;</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #BB9AF7;">type</span><span style="color: #C0CAF5;"> FundingChunk</span><span style="color: #89DDFF;"> =</span><span style="color: #9ABDF5;"> {</span></span>
+<span class="giallo-l"><span style="color: #73DACA;">    id</span><span style="color: #89DDFF;">:</span><span style="color: #0DB9D7;"> string</span><span style="color: #89DDFF;">;</span></span>
+<span class="giallo-l"><span style="color: #73DACA;">    opportunityId</span><span style="color: #89DDFF;">:</span><span style="color: #0DB9D7;"> string</span><span style="color: #89DDFF;">;</span></span>
+<span class="giallo-l"><span style="color: #73DACA;">    text</span><span style="color: #89DDFF;">:</span><span style="color: #0DB9D7;"> string</span><span style="color: #89DDFF;">;</span></span>
+<span class="giallo-l"><span style="color: #73DACA;">    section</span><span style="color: #89DDFF;">:</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">        | &quot;</span><span style="color: #9ECE6A;">summary</span><span style="color: #89DDFF;">&quot;</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">        | &quot;</span><span style="color: #9ECE6A;">scope</span><span style="color: #89DDFF;">&quot;</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">        | &quot;</span><span style="color: #9ECE6A;">eligibility</span><span style="color: #89DDFF;">&quot;</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">        | &quot;</span><span style="color: #9ECE6A;">expected_outcome</span><span style="color: #89DDFF;">&quot;</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">        | &quot;</span><span style="color: #9ECE6A;">budget</span><span style="color: #89DDFF;">&quot;</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">        | &quot;</span><span style="color: #9ECE6A;">deadline</span><span style="color: #89DDFF;">&quot;</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">        | &quot;</span><span style="color: #9ECE6A;">partners</span><span style="color: #89DDFF;">&quot;</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">        | &quot;</span><span style="color: #9ECE6A;">other</span><span style="color: #89DDFF;">&quot;;</span></span>
+<span class="giallo-l"><span style="color: #73DACA;">    chunkIndex</span><span style="color: #89DDFF;">:</span><span style="color: #0DB9D7;"> number</span><span style="color: #89DDFF;">;</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">}</span><span style="color: #89DDFF;">;</span></span></code></pre>
+<p>This is just an example schema. The real shape depends on your sources and how much metadata you can extract reliably.</p>
+<p>For instance, the official Funding &amp; Tenders Portal gives you structured fields for some things, while PDFs and programme pages may need extraction. KEEP.eu is useful for understanding past projects and partnerships, but it is a different type of dataset than an open call.</p>
+<p>The important part is to keep both levels:</p>
+<ul>
+<li>the opportunity or project as the parent object</li>
+<li>the text chunks as the searchable evidence</li>
+</ul>
+<p>In Qdrant, each point stores the vector for a chunk, but the payload keeps enough metadata to filter and explain the result:</p>
+<pre class="giallo" style="color: #AFBAD4; background-color: #1D1F29;"><code data-lang="typescript"><span class="giallo-l"><span style="color: #BB9AF7;font-style: italic;">await</span><span style="color: #C0CAF5;"> qdrant</span><span style="color: #89DDFF;">.</span><span style="color: #7AA2F7;">upsert</span><span style="color: #9ABDF5;">(</span><span style="color: #89DDFF;">&quot;</span><span style="color: #9ECE6A;">funding_chunks</span><span style="color: #89DDFF;">&quot;,</span><span style="color: #9ABDF5;"> {</span></span>
+<span class="giallo-l"><span style="color: #73DACA;">    points</span><span style="color: #89DDFF;">:</span><span style="color: #9ABDF5;"> [</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">        {</span></span>
+<span class="giallo-l"><span style="color: #73DACA;">            id</span><span style="color: #89DDFF;">:</span><span style="color: #C0CAF5;"> chunk</span><span style="color: #89DDFF;">.</span><span style="color: #7DCFFF;">id</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #73DACA;">            vector</span><span style="color: #89DDFF;">:</span><span style="color: #C0CAF5;"> embedding</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #73DACA;">            payload</span><span style="color: #89DDFF;">:</span><span style="color: #9ABDF5;"> {</span></span>
+<span class="giallo-l"><span style="color: #41A6B5;">                opportunity_id</span><span style="color: #89DDFF;">:</span><span style="color: #C0CAF5;"> opportunity</span><span style="color: #89DDFF;">.</span><span style="color: #7DCFFF;">id</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #41A6B5;">                title</span><span style="color: #89DDFF;">:</span><span style="color: #C0CAF5;"> opportunity</span><span style="color: #89DDFF;">.</span><span style="color: #7DCFFF;">title</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #41A6B5;">                source</span><span style="color: #89DDFF;">:</span><span style="color: #C0CAF5;"> opportunity</span><span style="color: #89DDFF;">.</span><span style="color: #7DCFFF;">source</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #41A6B5;">                programme</span><span style="color: #89DDFF;">:</span><span style="color: #C0CAF5;"> opportunity</span><span style="color: #89DDFF;">.</span><span style="color: #7DCFFF;">programme</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #41A6B5;">                topic_code</span><span style="color: #89DDFF;">:</span><span style="color: #C0CAF5;"> opportunity</span><span style="color: #89DDFF;">.</span><span style="color: #7DCFFF;">topicCode</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #41A6B5;">                status</span><span style="color: #89DDFF;">:</span><span style="color: #C0CAF5;"> opportunity</span><span style="color: #89DDFF;">.</span><span style="color: #7DCFFF;">status</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #41A6B5;">                deadline</span><span style="color: #89DDFF;">:</span><span style="color: #C0CAF5;"> opportunity</span><span style="color: #89DDFF;">.</span><span style="color: #7DCFFF;">deadline</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #41A6B5;">                applicant_types</span><span style="color: #89DDFF;">:</span><span style="color: #C0CAF5;"> opportunity</span><span style="color: #89DDFF;">.</span><span style="color: #7DCFFF;">applicantTypes</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #41A6B5;">                countries</span><span style="color: #89DDFF;">:</span><span style="color: #C0CAF5;"> opportunity</span><span style="color: #89DDFF;">.</span><span style="color: #7DCFFF;">countries</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #41A6B5;">                section</span><span style="color: #89DDFF;">:</span><span style="color: #C0CAF5;"> chunk</span><span style="color: #89DDFF;">.</span><span style="color: #7DCFFF;">section</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #41A6B5;">                url</span><span style="color: #89DDFF;">:</span><span style="color: #C0CAF5;"> opportunity</span><span style="color: #89DDFF;">.</span><span style="color: #7DCFFF;">url</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #41A6B5;">                text</span><span style="color: #89DDFF;">:</span><span style="color: #C0CAF5;"> chunk</span><span style="color: #89DDFF;">.</span><span style="color: #7DCFFF;">text</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">            }</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">        }</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">    ]</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">})</span><span style="color: #89DDFF;">;</span></span></code></pre>
+<p>Now we can search semantically, but still apply structured constraints.</p>
+<p>For example, if the user asks for open calls, we should not rely on the model to ignore closed opportunities. We can filter them before they reach the model:</p>
+<pre class="giallo" style="color: #AFBAD4; background-color: #1D1F29;"><code data-lang="typescript"><span class="giallo-l"><span style="color: #9D7CD8;font-style: italic;">const</span><span style="color: #BB9AF7;"> results</span><span style="color: #89DDFF;"> =</span><span style="color: #BB9AF7;font-style: italic;"> await</span><span style="color: #C0CAF5;"> qdrant</span><span style="color: #89DDFF;">.</span><span style="color: #7AA2F7;">search</span><span style="color: #9ABDF5;">(</span><span style="color: #89DDFF;">&quot;</span><span style="color: #9ECE6A;">funding_chunks</span><span style="color: #89DDFF;">&quot;,</span><span style="color: #9ABDF5;"> {</span></span>
+<span class="giallo-l"><span style="color: #73DACA;">    vector</span><span style="color: #89DDFF;">:</span><span style="color: #C0CAF5;"> queryEmbedding</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #73DACA;">    limit</span><span style="color: #89DDFF;">:</span><span style="color: #FF9E64;"> 30</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #73DACA;">    filter</span><span style="color: #89DDFF;">:</span><span style="color: #9ABDF5;"> {</span></span>
+<span class="giallo-l"><span style="color: #73DACA;">        must</span><span style="color: #89DDFF;">:</span><span style="color: #9ABDF5;"> [</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">            {</span></span>
+<span class="giallo-l"><span style="color: #41A6B5;">                key</span><span style="color: #89DDFF;">: &quot;</span><span style="color: #9ECE6A;">status</span><span style="color: #89DDFF;">&quot;,</span></span>
+<span class="giallo-l"><span style="color: #41A6B5;">                match</span><span style="color: #89DDFF;">:</span><span style="color: #9ABDF5;"> {</span><span style="color: #41A6B5;"> value</span><span style="color: #89DDFF;">: &quot;</span><span style="color: #9ECE6A;">open</span><span style="color: #89DDFF;">&quot;</span><span style="color: #9ABDF5;"> }</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">            }</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">        ]</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">    }</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">})</span><span style="color: #89DDFF;">;</span></span></code></pre>
+<p>This is already better.</p>
+<p>But we still have another problem: the user may not use the same vocabulary as the funding portal.</p>
+<h3 id="search-queries-are-not-user-questions">Search queries are not user questions</h3>
+<p>Users describe their project in plain language:</p>
+<blockquote>
+<p>I have a startup doing satellite analytics for farms. Is there money for this?</p>
+</blockquote>
+<p>A call might use very different terms:</p>
+<blockquote>
+<p>Earth observation, Copernicus downstream services, precision farming,
+agri-food data spaces, digital technologies for sustainable agriculture.</p>
+</blockquote>
+<p>The user did not say <code>Copernicus</code>, <code>Earth observation</code> or <code>data spaces</code>.
+A vector search may still find the right thing, but it is not something I would rely on completely.</p>
+<p>A useful step is to rewrite the user question into a retrieval query.</p>
+<p>Not an answer. Just a better search query.</p>
+<pre class="giallo" style="color: #AFBAD4; background-color: #1D1F29;"><code data-lang="typescript"><span class="giallo-l"><span style="color: #9D7CD8;font-style: italic;">const</span><span style="color: #BB9AF7;"> rewritePrompt</span><span style="color: #89DDFF;"> = `</span></span>
+<span class="giallo-l"><span style="color: #9ECE6A;">You are helping search a database of EU funding opportunities.</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #9ECE6A;">Rewrite the user&#39;s question into a concise search query that includes:</span></span>
+<span class="giallo-l"><span style="color: #9ECE6A;">- relevant technical terms</span></span>
+<span class="giallo-l"><span style="color: #9ECE6A;">- likely EU policy or programme vocabulary</span></span>
+<span class="giallo-l"><span style="color: #9ECE6A;">- synonyms</span></span>
+<span class="giallo-l"><span style="color: #9ECE6A;">- applicant type if mentioned</span></span>
+<span class="giallo-l"><span style="color: #9ECE6A;">- geography if mentioned</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #9ECE6A;">Do not answer the question.</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #9ECE6A;">&lt;user_question&gt;</span></span>
+<span class="giallo-l"><span style="color: #7DCFFF;">${</span><span style="color: #C0CAF5;">userQuestion</span><span style="color: #7DCFFF;">}</span></span>
+<span class="giallo-l"><span style="color: #9ECE6A;">&lt;/user_question&gt;</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">`;</span></span></code></pre>
+<p>For the startup example, a rewritten query might be:</p>
+<blockquote>
+<p>SME startup satellite analytics agriculture precision farming Earth observation Copernicus agri-food digital technologies sustainable agriculture EU funding Cyprus</p>
+</blockquote>
+<p>In practice, I like to keep both:</p>
+<ul>
+<li>the original user question, for the final answer</li>
+<li>the rewritten query, for retrieval</li>
+</ul>
+<p>This makes the search less dependent on the user's vocabulary.</p>
+<p>But the rewrite should not only be a prettier string that another LLM has to interpret later. If it can produce a structured object, the rest of the system can make deterministic decisions from it. For example, <code>status=open</code>, <code>country=Cyprus</code>, <code>applicant_type=SME</code>, <code>sector=agriculture</code>, and <code>funding_need=pilot</code> can drive filters, boosts, and eligibility checks directly. That removes a lot of prompt-dependent behavior from the retrieval path.</p>
+<h3 id="rewrite-into-a-project-profile-not-just-a-query">Rewrite into a project profile, not just a query</h3>
+<p>In practice, I would not stop at a rewritten text query.</p>
+<p>For funding discovery, the rewrite step should also produce a structured project profile. The user's question usually hides important application logic: who is applying, where they are based, what kind of work they want to fund, how mature the project is, and which eligibility checks will matter later.</p>
+<p>For the agriculture example, the rewrite step could produce something like this:</p>
+<pre class="giallo" style="color: #AFBAD4; background-color: #1D1F29;"><code data-lang="json"><span class="giallo-l"><span style="color: #9ABDF5;">{</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">  &quot;</span><span style="color: #0DB9D7;">sector</span><span style="color: #89DDFF;">&quot;: &quot;</span><span style="color: #9ECE6A;">agriculture</span><span style="color: #89DDFF;">&quot;,</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">  &quot;</span><span style="color: #0DB9D7;">applicant_type</span><span style="color: #89DDFF;">&quot;: &quot;</span><span style="color: #9ECE6A;">SME</span><span style="color: #89DDFF;">&quot;,</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">  &quot;</span><span style="color: #0DB9D7;">country</span><span style="color: #89DDFF;">&quot;: &quot;</span><span style="color: #9ECE6A;">Cyprus</span><span style="color: #89DDFF;">&quot;,</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">  &quot;</span><span style="color: #0DB9D7;">technologies</span><span style="color: #89DDFF;">&quot;:</span><span style="color: #9ABDF5;"> [</span><span style="color: #89DDFF;">&quot;</span><span style="color: #9ECE6A;">AI</span><span style="color: #89DDFF;">&quot;, &quot;</span><span style="color: #9ECE6A;">satellite imagery</span><span style="color: #89DDFF;">&quot;, &quot;</span><span style="color: #9ECE6A;">drone imagery</span><span style="color: #89DDFF;">&quot;</span><span style="color: #9ABDF5;">]</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">  &quot;</span><span style="color: #0DB9D7;">use_case</span><span style="color: #89DDFF;">&quot;: &quot;</span><span style="color: #9ECE6A;">crop disease detection</span><span style="color: #89DDFF;">&quot;,</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">  &quot;</span><span style="color: #0DB9D7;">project_stage</span><span style="color: #89DDFF;">&quot;: &quot;</span><span style="color: #9ECE6A;">prototype</span><span style="color: #89DDFF;">&quot;,</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">  &quot;</span><span style="color: #0DB9D7;">funding_need</span><span style="color: #89DDFF;">&quot;:</span><span style="color: #9ABDF5;"> [</span><span style="color: #89DDFF;">&quot;</span><span style="color: #9ECE6A;">R&amp;D</span><span style="color: #89DDFF;">&quot;, &quot;</span><span style="color: #9ECE6A;">pilot deployment</span><span style="color: #89DDFF;">&quot;</span><span style="color: #9ABDF5;">]</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">  &quot;</span><span style="color: #0DB9D7;">likely_eu_vocabulary</span><span style="color: #89DDFF;">&quot;:</span><span style="color: #9ABDF5;"> [</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">    &quot;</span><span style="color: #9ECE6A;">precision agriculture</span><span style="color: #89DDFF;">&quot;,</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">    &quot;</span><span style="color: #9ECE6A;">Earth observation</span><span style="color: #89DDFF;">&quot;,</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">    &quot;</span><span style="color: #9ECE6A;">Copernicus downstream services</span><span style="color: #89DDFF;">&quot;,</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">    &quot;</span><span style="color: #9ECE6A;">agri-food data spaces</span><span style="color: #89DDFF;">&quot;,</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">    &quot;</span><span style="color: #9ECE6A;">digital technologies for sustainable agriculture</span><span style="color: #89DDFF;">&quot;</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">  ]</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">  &quot;</span><span style="color: #0DB9D7;">eligibility_questions_to_check</span><span style="color: #89DDFF;">&quot;:</span><span style="color: #9ABDF5;"> [</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">    &quot;</span><span style="color: #9ECE6A;">Is the call open to SMEs?</span><span style="color: #89DDFF;">&quot;,</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">    &quot;</span><span style="color: #9ECE6A;">Is a consortium required?</span><span style="color: #89DDFF;">&quot;,</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">    &quot;</span><span style="color: #9ECE6A;">Does the call fund R&amp;D, deployment, advisory services or infrastructure?</span><span style="color: #89DDFF;">&quot;,</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">    &quot;</span><span style="color: #9ECE6A;">Is Cyprus eligible directly or through EU Member State rules?</span><span style="color: #89DDFF;">&quot;,</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">    &quot;</span><span style="color: #9ECE6A;">Does the expected TRL match a prototype-stage project?</span><span style="color: #89DDFF;">&quot;</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">  ]</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">}</span></span></code></pre>
+<p>The important part is that the model is not inventing eligibility. It is extracting what the user said, adding cautious search vocabulary, and making the missing checks explicit.</p>
+<p>This becomes more useful when the rewrite logic is domain-aware. If the project is agricultural, the system may need to know whether it involves crops, livestock, irrigation, soil, farm machinery, pesticides, satellite data, drone data, greenhouses or food supply chains. If the project is manufacturing, it may matter whether it involves metals, plastics, robotics, energy efficiency, waste reduction, quality control or worker safety.</p>
+<p>A lightweight profile type could look like this:</p>
+<pre class="giallo" style="color: #AFBAD4; background-color: #1D1F29;"><code data-lang="typescript"><span class="giallo-l"><span style="color: #BB9AF7;">type</span><span style="color: #C0CAF5;"> ProjectProfile</span><span style="color: #89DDFF;"> =</span><span style="color: #9ABDF5;"> {</span></span>
+<span class="giallo-l"><span style="color: #73DACA;">    applicantType</span><span style="color: #89DDFF;">?:</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">        | &quot;</span><span style="color: #9ECE6A;">SME</span><span style="color: #89DDFF;">&quot;</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">        | &quot;</span><span style="color: #9ECE6A;">university</span><span style="color: #89DDFF;">&quot;</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">        | &quot;</span><span style="color: #9ECE6A;">public_authority</span><span style="color: #89DDFF;">&quot;</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">        | &quot;</span><span style="color: #9ECE6A;">nonprofit</span><span style="color: #89DDFF;">&quot;</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">        | &quot;</span><span style="color: #9ECE6A;">large_company</span><span style="color: #89DDFF;">&quot;;</span></span>
+<span class="giallo-l"><span style="color: #73DACA;">    country</span><span style="color: #89DDFF;">?:</span><span style="color: #0DB9D7;"> string</span><span style="color: #89DDFF;">;</span></span>
+<span class="giallo-l"><span style="color: #73DACA;">    sector</span><span style="color: #89DDFF;">?:</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">        | &quot;</span><span style="color: #9ECE6A;">agriculture</span><span style="color: #89DDFF;">&quot;</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">        | &quot;</span><span style="color: #9ECE6A;">manufacturing</span><span style="color: #89DDFF;">&quot;</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">        | &quot;</span><span style="color: #9ECE6A;">energy</span><span style="color: #89DDFF;">&quot;</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">        | &quot;</span><span style="color: #9ECE6A;">health</span><span style="color: #89DDFF;">&quot;</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">        | &quot;</span><span style="color: #9ECE6A;">education</span><span style="color: #89DDFF;">&quot;</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">        | &quot;</span><span style="color: #9ECE6A;">other</span><span style="color: #89DDFF;">&quot;;</span></span>
+<span class="giallo-l"><span style="color: #73DACA;">    technologies</span><span style="color: #89DDFF;">?:</span><span style="color: #0DB9D7;"> string</span><span style="color: #9ABDF5;">[]</span><span style="color: #89DDFF;">;</span></span>
+<span class="giallo-l"><span style="color: #73DACA;">    projectStage</span><span style="color: #89DDFF;">?: &quot;</span><span style="color: #9ECE6A;">idea</span><span style="color: #89DDFF;">&quot; | &quot;</span><span style="color: #9ECE6A;">prototype</span><span style="color: #89DDFF;">&quot; | &quot;</span><span style="color: #9ECE6A;">pilot</span><span style="color: #89DDFF;">&quot; | &quot;</span><span style="color: #9ECE6A;">market_ready</span><span style="color: #89DDFF;">&quot; | &quot;</span><span style="color: #9ECE6A;">scale_up</span><span style="color: #89DDFF;">&quot;;</span></span>
+<span class="giallo-l"><span style="color: #73DACA;">    fundingNeed</span><span style="color: #89DDFF;">?:</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">        | &quot;</span><span style="color: #9ECE6A;">research</span><span style="color: #89DDFF;">&quot;</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">        | &quot;</span><span style="color: #9ECE6A;">pilot</span><span style="color: #89DDFF;">&quot;</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">        | &quot;</span><span style="color: #9ECE6A;">deployment</span><span style="color: #89DDFF;">&quot;</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">        | &quot;</span><span style="color: #9ECE6A;">training</span><span style="color: #89DDFF;">&quot;</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">        | &quot;</span><span style="color: #9ECE6A;">infrastructure</span><span style="color: #89DDFF;">&quot;;</span></span>
+<span class="giallo-l"><span style="color: #73DACA;">    domainSpecificSignals</span><span style="color: #89DDFF;">?:</span><span style="color: #C0CAF5;"> Record</span><span style="color: #89DDFF;">&lt;</span><span style="color: #0DB9D7;">string</span><span style="color: #89DDFF;">,</span><span style="color: #0DB9D7;"> string</span><span style="color: #9ABDF5;">[]</span><span style="color: #89DDFF;">&gt;;</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">}</span><span style="color: #89DDFF;">;</span></span></code></pre>
+<p>For an agriculture project:</p>
+<pre class="giallo" style="color: #AFBAD4; background-color: #1D1F29;"><code data-lang="json"><span class="giallo-l"><span style="color: #9ABDF5;">{</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">  &quot;</span><span style="color: #0DB9D7;">sector</span><span style="color: #89DDFF;">&quot;: &quot;</span><span style="color: #9ECE6A;">agriculture</span><span style="color: #89DDFF;">&quot;,</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">  &quot;</span><span style="color: #0DB9D7;">domainSpecificSignals</span><span style="color: #89DDFF;">&quot;:</span><span style="color: #9ABDF5;"> {</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">    &quot;</span><span style="color: #0DB9D7;">crop_type</span><span style="color: #89DDFF;">&quot;:</span><span style="color: #9ABDF5;"> [</span><span style="color: #89DDFF;">&quot;</span><span style="color: #9ECE6A;">vineyards</span><span style="color: #89DDFF;">&quot;, &quot;</span><span style="color: #9ECE6A;">citrus</span><span style="color: #89DDFF;">&quot;, &quot;</span><span style="color: #9ECE6A;">open-field vegetables</span><span style="color: #89DDFF;">&quot;</span><span style="color: #9ABDF5;">]</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">    &quot;</span><span style="color: #0DB9D7;">data_sources</span><span style="color: #89DDFF;">&quot;:</span><span style="color: #9ABDF5;"> [</span><span style="color: #89DDFF;">&quot;</span><span style="color: #9ECE6A;">satellite imagery</span><span style="color: #89DDFF;">&quot;, &quot;</span><span style="color: #9ECE6A;">drone imagery</span><span style="color: #89DDFF;">&quot;</span><span style="color: #9ABDF5;">]</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">    &quot;</span><span style="color: #0DB9D7;">terrain_or_land_use</span><span style="color: #89DDFF;">&quot;:</span><span style="color: #9ABDF5;"> [</span><span style="color: #89DDFF;">&quot;</span><span style="color: #9ECE6A;">irrigated farmland</span><span style="color: #89DDFF;">&quot;, &quot;</span><span style="color: #9ECE6A;">greenhouse</span><span style="color: #89DDFF;">&quot;, &quot;</span><span style="color: #9ECE6A;">arid region</span><span style="color: #89DDFF;">&quot;</span><span style="color: #9ABDF5;">]</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">    &quot;</span><span style="color: #0DB9D7;">outcomes</span><span style="color: #89DDFF;">&quot;:</span><span style="color: #9ABDF5;"> [</span><span style="color: #89DDFF;">&quot;</span><span style="color: #9ECE6A;">disease detection</span><span style="color: #89DDFF;">&quot;, &quot;</span><span style="color: #9ECE6A;">yield protection</span><span style="color: #89DDFF;">&quot;, &quot;</span><span style="color: #9ECE6A;">reduced pesticide use</span><span style="color: #89DDFF;">&quot;</span><span style="color: #9ABDF5;">]</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">  }</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">}</span></span></code></pre>
+<p>For a manufacturing project:</p>
+<pre class="giallo" style="color: #AFBAD4; background-color: #1D1F29;"><code data-lang="json"><span class="giallo-l"><span style="color: #9ABDF5;">{</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">  &quot;</span><span style="color: #0DB9D7;">sector</span><span style="color: #89DDFF;">&quot;: &quot;</span><span style="color: #9ECE6A;">manufacturing</span><span style="color: #89DDFF;">&quot;,</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">  &quot;</span><span style="color: #0DB9D7;">domainSpecificSignals</span><span style="color: #89DDFF;">&quot;:</span><span style="color: #9ABDF5;"> {</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">    &quot;</span><span style="color: #0DB9D7;">materials</span><span style="color: #89DDFF;">&quot;:</span><span style="color: #9ABDF5;"> [</span><span style="color: #89DDFF;">&quot;</span><span style="color: #9ECE6A;">steel</span><span style="color: #89DDFF;">&quot;, &quot;</span><span style="color: #9ECE6A;">aluminium</span><span style="color: #89DDFF;">&quot;, &quot;</span><span style="color: #9ECE6A;">composites</span><span style="color: #89DDFF;">&quot;</span><span style="color: #9ABDF5;">]</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">    &quot;</span><span style="color: #0DB9D7;">processes</span><span style="color: #89DDFF;">&quot;:</span><span style="color: #9ABDF5;"> [</span><span style="color: #89DDFF;">&quot;</span><span style="color: #9ECE6A;">CNC machining</span><span style="color: #89DDFF;">&quot;, &quot;</span><span style="color: #9ECE6A;">welding</span><span style="color: #89DDFF;">&quot;, &quot;</span><span style="color: #9ECE6A;">surface treatment</span><span style="color: #89DDFF;">&quot;</span><span style="color: #9ABDF5;">]</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">    &quot;</span><span style="color: #0DB9D7;">outcomes</span><span style="color: #89DDFF;">&quot;:</span><span style="color: #9ABDF5;"> [</span><span style="color: #89DDFF;">&quot;</span><span style="color: #9ECE6A;">energy efficiency</span><span style="color: #89DDFF;">&quot;, &quot;</span><span style="color: #9ECE6A;">waste reduction</span><span style="color: #89DDFF;">&quot;, &quot;</span><span style="color: #9ECE6A;">automation</span><span style="color: #89DDFF;">&quot;, &quot;</span><span style="color: #9ECE6A;">quality control</span><span style="color: #89DDFF;">&quot;</span><span style="color: #9ABDF5;">]</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">  }</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">}</span></span></code></pre>
+<p>This profile can drive several later decisions:</p>
+<ul>
+<li>which search terms to add</li>
+<li>which metadata filters are safe</li>
+<li>which candidate opportunities deserve a soft boost</li>
+<li>which eligibility questions should appear in the final answer</li>
+<li>which missing details should be asked from the user before they spend time applying</li>
+</ul>
+<p>This is the difference between a generic RAG search and a funding assistant that understands the shape of an application.</p>
+<h3 id="retrieve-more-than-you-need">Retrieve more than you need</h3>
+<p>Another common mistake is retrieving exactly the number of chunks that you want to send to the model.</p>
+<p>For example:</p>
+<pre class="giallo" style="color: #AFBAD4; background-color: #1D1F29;"><code data-lang="typescript"><span class="giallo-l"><span style="color: #C0CAF5;">limit</span><span style="color: #89DDFF;">:</span><span style="color: #FF9E64;"> 5</span></span></code></pre>
+<p>This is usually too small.</p>
+<p>The first retrieval step should be recall-oriented. We want to collect plausible candidates. Then we can deduplicate, group by opportunity, rerank, and only then select the final context.</p>
+<p>For example:</p>
+<pre class="giallo" style="color: #AFBAD4; background-color: #1D1F29;"><code data-lang="typescript"><span class="giallo-l"><span style="color: #9D7CD8;font-style: italic;">const</span><span style="color: #BB9AF7;"> candidates</span><span style="color: #89DDFF;"> =</span><span style="color: #BB9AF7;font-style: italic;"> await</span><span style="color: #C0CAF5;"> qdrant</span><span style="color: #89DDFF;">.</span><span style="color: #7AA2F7;">search</span><span style="color: #9ABDF5;">(</span><span style="color: #89DDFF;">&quot;</span><span style="color: #9ECE6A;">funding_chunks</span><span style="color: #89DDFF;">&quot;,</span><span style="color: #9ABDF5;"> {</span></span>
+<span class="giallo-l"><span style="color: #73DACA;">    vector</span><span style="color: #89DDFF;">:</span><span style="color: #C0CAF5;"> searchEmbedding</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #73DACA;">    limit</span><span style="color: #89DDFF;">:</span><span style="color: #FF9E64;"> 50</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #C0CAF5;">    filter</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">})</span><span style="color: #89DDFF;">;</span></span></code></pre>
+<p>Then we group by <code>opportunity_id</code>:</p>
+<pre class="giallo" style="color: #AFBAD4; background-color: #1D1F29;"><code data-lang="typescript"><span class="giallo-l"><span style="color: #9D7CD8;font-style: italic;">const</span><span style="color: #BB9AF7;"> byOpportunity</span><span style="color: #89DDFF;"> = new</span><span style="color: #7AA2F7;"> Map</span><span style="color: #89DDFF;">&lt;</span><span style="color: #0DB9D7;">string</span><span style="color: #89DDFF;">,</span><span style="color: #C0CAF5;"> FundingChunkResult</span><span style="color: #9ABDF5;">[]</span><span style="color: #89DDFF;">&gt;</span><span style="color: #9ABDF5;">()</span><span style="color: #89DDFF;">;</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #BB9AF7;">for</span><span style="color: #9ABDF5;"> (</span><span style="color: #9D7CD8;font-style: italic;">const</span><span style="color: #BB9AF7;"> result</span><span style="color: #89DDFF;"> of</span><span style="color: #C0CAF5;"> candidates</span><span style="color: #9ABDF5;">) {</span></span>
+<span class="giallo-l"><span style="color: #9D7CD8;font-style: italic;">    const</span><span style="color: #BB9AF7;"> opportunityId</span><span style="color: #89DDFF;"> =</span><span style="color: #C0CAF5;"> result</span><span style="color: #89DDFF;">.</span><span style="color: #C0CAF5;">payload</span><span style="color: #89DDFF;">.</span><span style="color: #7DCFFF;">opportunity_id</span><span style="color: #89DDFF;">;</span></span>
+<span class="giallo-l"><span style="color: #BB9AF7;">    if</span><span style="color: #9ABDF5;"> (</span><span style="color: #BB9AF7;">!</span><span style="color: #C0CAF5;">byOpportunity</span><span style="color: #89DDFF;">.</span><span style="color: #7AA2F7;">has</span><span style="color: #9ABDF5;">(</span><span style="color: #C0CAF5;">opportunityId</span><span style="color: #9ABDF5;">)) {</span></span>
+<span class="giallo-l"><span style="color: #C0CAF5;">        byOpportunity</span><span style="color: #89DDFF;">.</span><span style="color: #7AA2F7;">set</span><span style="color: #9ABDF5;">(</span><span style="color: #C0CAF5;">opportunityId</span><span style="color: #89DDFF;">,</span><span style="color: #9ABDF5;"> [])</span><span style="color: #89DDFF;">;</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">    }</span></span>
+<span class="giallo-l"><span style="color: #C0CAF5;">    byOpportunity</span><span style="color: #89DDFF;">.</span><span style="color: #7AA2F7;">get</span><span style="color: #9ABDF5;">(</span><span style="color: #C0CAF5;">opportunityId</span><span style="color: #9ABDF5;">)</span><span style="color: #BB9AF7;">!</span><span style="color: #89DDFF;">.</span><span style="color: #7AA2F7;">push</span><span style="color: #9ABDF5;">(</span><span style="color: #C0CAF5;">result</span><span style="color: #9ABDF5;">)</span><span style="color: #89DDFF;">;</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">}</span></span></code></pre>
+<p>This matters because if one opportunity has ten similar chunks, it can crowd out every other opportunity.</p>
+<p>I do not want the retrieval step to return ten chunks from the same call. I want it to return a good set of candidate opportunities.</p>
+<p>A simple scoring approach could be:</p>
+<pre class="giallo" style="color: #AFBAD4; background-color: #1D1F29;"><code data-lang="typescript"><span class="giallo-l"><span style="color: #9D7CD8;font-style: italic;">const</span><span style="color: #BB9AF7;"> opportunityCandidates</span><span style="color: #89DDFF;"> =</span><span style="color: #9ABDF5;"> [</span><span style="color: #F7768E;font-weight: bold;">...</span><span style="color: #C0CAF5;">byOpportunity</span><span style="color: #89DDFF;">.</span><span style="color: #7AA2F7;">entries</span><span style="color: #9ABDF5;">()]</span><span style="color: #89DDFF;">.</span><span style="color: #7AA2F7;">map</span><span style="color: #9ABDF5;">(</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">    (</span><span style="color: #89DDFF;">[</span><span style="color: #E0AF68;">opportunityId</span><span style="color: #89DDFF;">,</span><span style="color: #E0AF68;"> chunks</span><span style="color: #89DDFF;">]</span><span style="color: #9ABDF5;">)</span><span style="color: #BB9AF7;font-style: italic;"> =&gt;</span><span style="color: #9ABDF5;"> {</span></span>
+<span class="giallo-l"><span style="color: #9D7CD8;font-style: italic;">        const</span><span style="color: #BB9AF7;"> bestScore</span><span style="color: #89DDFF;"> =</span><span style="color: #C0CAF5;"> Math</span><span style="color: #89DDFF;">.</span><span style="color: #7AA2F7;">max</span><span style="color: #9ABDF5;">(</span><span style="color: #F7768E;font-weight: bold;">...</span><span style="color: #C0CAF5;">chunks</span><span style="color: #89DDFF;">.</span><span style="color: #7AA2F7;">map</span><span style="color: #9ABDF5;">((</span><span style="color: #E0AF68;">c</span><span style="color: #9ABDF5;">)</span><span style="color: #BB9AF7;font-style: italic;"> =&gt;</span><span style="color: #C0CAF5;"> c</span><span style="color: #89DDFF;">.</span><span style="color: #7DCFFF;">score</span><span style="color: #9ABDF5;">))</span><span style="color: #89DDFF;">;</span></span>
+<span class="giallo-l"><span style="color: #9D7CD8;font-style: italic;">        const</span><span style="color: #BB9AF7;"> sections</span><span style="color: #89DDFF;"> = new</span><span style="color: #7AA2F7;"> Set</span><span style="color: #9ABDF5;">(</span><span style="color: #C0CAF5;">chunks</span><span style="color: #89DDFF;">.</span><span style="color: #7AA2F7;">map</span><span style="color: #9ABDF5;">((</span><span style="color: #E0AF68;">c</span><span style="color: #9ABDF5;">)</span><span style="color: #BB9AF7;font-style: italic;"> =&gt;</span><span style="color: #C0CAF5;"> c</span><span style="color: #89DDFF;">.</span><span style="color: #C0CAF5;">payload</span><span style="color: #89DDFF;">.</span><span style="color: #7DCFFF;">section</span><span style="color: #9ABDF5;">))</span><span style="color: #89DDFF;">;</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #BB9AF7;font-style: italic;">        return</span><span style="color: #9ABDF5;"> {</span></span>
+<span class="giallo-l"><span style="color: #C0CAF5;">            opportunityId</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #C0CAF5;">            bestScore</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #73DACA;">            sectionCoverage</span><span style="color: #89DDFF;">:</span><span style="color: #C0CAF5;"> sections</span><span style="color: #89DDFF;">.</span><span style="color: #7DCFFF;">size</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #73DACA;">            chunks</span><span style="color: #89DDFF;">:</span><span style="color: #C0CAF5;"> chunks</span><span style="color: #89DDFF;">.</span><span style="color: #7AA2F7;">slice</span><span style="color: #9ABDF5;">(</span><span style="color: #FF9E64;">0</span><span style="color: #89DDFF;">,</span><span style="color: #FF9E64;"> 4</span><span style="color: #9ABDF5;">)</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">        }</span><span style="color: #89DDFF;">;</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">    }</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">)</span><span style="color: #89DDFF;">;</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #C0CAF5;">opportunityCandidates</span><span style="color: #89DDFF;">.</span><span style="color: #7AA2F7;">sort</span><span style="color: #9ABDF5;">((</span><span style="color: #E0AF68;">a</span><span style="color: #89DDFF;">,</span><span style="color: #E0AF68;"> b</span><span style="color: #9ABDF5;">)</span><span style="color: #BB9AF7;"> =&gt;</span><span style="color: #C0CAF5;"> b</span><span style="color: #89DDFF;">.</span><span style="color: #7DCFFF;">bestScore</span><span style="color: #89DDFF;"> -</span><span style="color: #C0CAF5;"> a</span><span style="color: #89DDFF;">.</span><span style="color: #7DCFFF;">bestScore</span><span style="color: #9ABDF5;">)</span><span style="color: #89DDFF;">;</span></span></code></pre>
+<p>This is not perfect, but it is already better than passing raw chunks to the model.</p>
+<h3 id="rerank-for-actual-usefulness">Rerank for actual usefulness</h3>
+<p>Semantic similarity is not the same as usefulness.</p>
+<p>For EU funding, a good result should help answer:</p>
+<ul>
+<li>is the opportunity relevant to the project?</li>
+<li>is the applicant type plausible?</li>
+<li>is it open or upcoming?</li>
+<li>what should the user check next?</li>
+<li>is this an actual call, a past project, or supporting background information?</li>
+</ul>
+<p>This is where a reranking step helps.</p>
+<p>In production, I would usually start with a dedicated reranking model or a cheaper scoring layer. A cross-encoder reranker, for example, can score candidate chunks or opportunity summaries much faster than asking a general-purpose LLM to judge every result.</p>
+<p>An LLM-based reranker is still useful during prototyping because it gives inspectable reasons. It helps debug whether the retrieved opportunities are actually useful, whether the project profile is being interpreted correctly, and which eligibility checks are driving the ranking.</p>
+<p>A practical pipeline could look like this:</p>
+<pre class="giallo" style="color: #AFBAD4; background-color: #1D1F29;"><code data-lang="plain"><span class="giallo-l"><span>1. Vector search retrieves 50 chunks</span></span>
+<span class="giallo-l"><span>2. Group chunks by opportunity</span></span>
+<span class="giallo-l"><span>3. Apply metadata boosts and penalties</span></span>
+<span class="giallo-l"><span>4. Use a dedicated reranker over the top candidates</span></span>
+<span class="giallo-l"><span>5. Optionally run an async LLM judge for explanation and debugging</span></span>
+<span class="giallo-l"><span>6. Send only the final selected opportunities to the answer model</span></span></code></pre>
+<p>If the LLM judge is used in the user-facing path, it should run only on a small candidate set, and ideally asynchronously or behind caching. Otherwise the system will be slow and expensive.</p>
+<p>For prototyping, an LLM-based judge might look like this:</p>
+<pre class="giallo" style="color: #AFBAD4; background-color: #1D1F29;"><code data-lang="typescript"><span class="giallo-l"><span style="color: #9D7CD8;font-style: italic;">const</span><span style="color: #BB9AF7;"> rerankPrompt</span><span style="color: #89DDFF;"> = `</span></span>
+<span class="giallo-l"><span style="color: #9ECE6A;">You are ranking EU funding opportunities for relevance.</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #9ECE6A;">User question:</span></span>
+<span class="giallo-l"><span style="color: #9ECE6A;">&lt;question&gt;</span></span>
+<span class="giallo-l"><span style="color: #7DCFFF;">${</span><span style="color: #C0CAF5;">userQuestion</span><span style="color: #7DCFFF;">}</span></span>
+<span class="giallo-l"><span style="color: #9ECE6A;">&lt;/question&gt;</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #9ECE6A;">Candidate opportunities:</span></span>
+<span class="giallo-l"><span style="color: #9ECE6A;">&lt;candidates&gt;</span></span>
+<span class="giallo-l"><span style="color: #7DCFFF;">${</span><span style="color: #C0CAF5;">opportunityCandidates</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">    .</span><span style="color: #7AA2F7;">map</span><span style="color: #9ABDF5;">(</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">        (</span><span style="color: #E0AF68;">candidate</span><span style="color: #89DDFF;">,</span><span style="color: #E0AF68;"> index</span><span style="color: #9ABDF5;">)</span><span style="color: #BB9AF7;font-style: italic;"> =&gt;</span><span style="color: #89DDFF;"> `</span></span>
+<span class="giallo-l"><span style="color: #9ECE6A;">&lt;candidate index=&quot;</span><span style="color: #7DCFFF;">${</span><span style="color: #C0CAF5;">index</span><span style="color: #7DCFFF;">}</span><span style="color: #9ECE6A;">&quot;&gt;</span></span>
+<span class="giallo-l"><span style="color: #9ECE6A;">&lt;title&gt;</span><span style="color: #7DCFFF;">${</span><span style="color: #C0CAF5;">candidate</span><span style="color: #89DDFF;">.</span><span style="color: #7DCFFF;">title}</span><span style="color: #9ECE6A;">&lt;/title&gt;</span></span>
+<span class="giallo-l"><span style="color: #9ECE6A;">&lt;source&gt;</span><span style="color: #7DCFFF;">${</span><span style="color: #C0CAF5;">candidate</span><span style="color: #89DDFF;">.</span><span style="color: #7DCFFF;">source}</span><span style="color: #9ECE6A;">&lt;/source&gt;</span></span>
+<span class="giallo-l"><span style="color: #9ECE6A;">&lt;programme&gt;</span><span style="color: #7DCFFF;">${</span><span style="color: #C0CAF5;">candidate</span><span style="color: #89DDFF;">.</span><span style="color: #7DCFFF;">programme}</span><span style="color: #9ECE6A;">&lt;/programme&gt;</span></span>
+<span class="giallo-l"><span style="color: #9ECE6A;">&lt;status&gt;</span><span style="color: #7DCFFF;">${</span><span style="color: #C0CAF5;">candidate</span><span style="color: #89DDFF;">.</span><span style="color: #7DCFFF;">status</span><span style="color: #BB9AF7;"> ??</span><span style="color: #89DDFF;"> &quot;</span><span style="color: #9ECE6A;">unknown</span><span style="color: #89DDFF;">&quot;</span><span style="color: #7DCFFF;">}</span><span style="color: #9ECE6A;">&lt;/status&gt;</span></span>
+<span class="giallo-l"><span style="color: #9ECE6A;">&lt;deadline&gt;</span><span style="color: #7DCFFF;">${</span><span style="color: #C0CAF5;">candidate</span><span style="color: #89DDFF;">.</span><span style="color: #7DCFFF;">deadline</span><span style="color: #BB9AF7;"> ??</span><span style="color: #89DDFF;"> &quot;</span><span style="color: #9ECE6A;">unknown</span><span style="color: #89DDFF;">&quot;</span><span style="color: #7DCFFF;">}</span><span style="color: #9ECE6A;">&lt;/deadline&gt;</span></span>
+<span class="giallo-l"><span style="color: #9ECE6A;">&lt;snippets&gt;</span></span>
+<span class="giallo-l"><span style="color: #7DCFFF;">${</span><span style="color: #C0CAF5;">candidate</span><span style="color: #89DDFF;">.</span><span style="color: #7DCFFF;">chunks</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">    .</span><span style="color: #7AA2F7;">map</span><span style="color: #9ABDF5;">(</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">        (</span><span style="color: #E0AF68;">chunk</span><span style="color: #9ABDF5;">)</span><span style="color: #BB9AF7;font-style: italic;"> =&gt;</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">            `</span><span style="color: #9ECE6A;">&lt;snippet section=&quot;</span><span style="color: #7DCFFF;">${</span><span style="color: #C0CAF5;">chunk</span><span style="color: #89DDFF;">.</span><span style="color: #C0CAF5;">payload</span><span style="color: #89DDFF;">.</span><span style="color: #7DCFFF;">section}</span><span style="color: #9ECE6A;">&quot;&gt;</span><span style="color: #7DCFFF;">${</span><span style="color: #C0CAF5;">chunk</span><span style="color: #89DDFF;">.</span><span style="color: #C0CAF5;">payload</span><span style="color: #89DDFF;">.</span><span style="color: #7DCFFF;">text}</span><span style="color: #9ECE6A;">&lt;/snippet&gt;</span><span style="color: #89DDFF;">`,</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">    )</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">    .</span><span style="color: #7AA2F7;">join</span><span style="color: #9ABDF5;">(</span><span style="color: #89DDFF;">&quot;\n&quot;</span><span style="color: #9ABDF5;">)</span><span style="color: #7DCFFF;">}</span></span>
+<span class="giallo-l"><span style="color: #9ECE6A;">&lt;/snippets&gt;</span></span>
+<span class="giallo-l"><span style="color: #9ECE6A;">&lt;/candidate&gt;</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">`,</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">    )</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">    .</span><span style="color: #7AA2F7;">join</span><span style="color: #9ABDF5;">(</span><span style="color: #89DDFF;">&quot;\n&quot;</span><span style="color: #9ABDF5;">)</span><span style="color: #7DCFFF;">}</span></span>
+<span class="giallo-l"><span style="color: #9ECE6A;">&lt;/candidates&gt;</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #9ECE6A;">For each candidate, score it from 0 to 5:</span></span>
+<span class="giallo-l"><span style="color: #9ECE6A;">- 5: directly relevant and likely actionable</span></span>
+<span class="giallo-l"><span style="color: #9ECE6A;">- 4: relevant but needs eligibility checks</span></span>
+<span class="giallo-l"><span style="color: #9ECE6A;">- 3: adjacent, possibly useful</span></span>
+<span class="giallo-l"><span style="color: #9ECE6A;">- 2: weak relevance</span></span>
+<span class="giallo-l"><span style="color: #9ECE6A;">- 1: mostly irrelevant</span></span>
+<span class="giallo-l"><span style="color: #9ECE6A;">- 0: not relevant</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #9ECE6A;">Return JSON only.</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">`;</span></span></code></pre>
+<p>I like this pattern because it makes failures easier to debug.</p>
+<p>If the answer is bad, we can check:</p>
+<ul>
+<li>did the vector search retrieve the right things?</li>
+<li>did grouping lose useful chunks?</li>
+<li>did reranking choose the wrong opportunities?</li>
+<li>did the final model ignore the evidence?</li>
+</ul>
+<p>Without these intermediate steps, RAG systems can become very difficult to reason about.</p>
+<h3 id="build-the-context-explicitly">Build the context explicitly</h3>
+<p>When sending the final context to the model, I prefer not to dump raw chunks.</p>
+<p>The model should not have to guess what is a title, what is a deadline and what is a source URL.</p>
+<p>A structured context works much better:</p>
+<pre class="giallo" style="color: #AFBAD4; background-color: #1D1F29;"><code data-lang="xml"><span class="giallo-l"><span style="color: #BA3C97;">&lt;</span><span style="color: #F7768E;">opportunity</span><span style="color: #BB9AF7;"> id</span><span style="color: #F7768E;">=</span><span style="color: #89DDFF;">&quot;</span><span style="color: #9ECE6A;">HORIZON-CL6-2025-01</span><span style="color: #89DDFF;">&quot;</span><span style="color: #BA3C97;">&gt;</span></span>
+<span class="giallo-l"><span style="color: #BA3C97;">  &lt;</span><span style="color: #F7768E;">title</span><span style="color: #BA3C97;">&gt;</span><span>Digital tools for sustainable agriculture</span><span style="color: #BA3C97;">&lt;/</span><span style="color: #F7768E;">title</span><span style="color: #BA3C97;">&gt;</span></span>
+<span class="giallo-l"><span style="color: #BA3C97;">  &lt;</span><span style="color: #F7768E;">source</span><span style="color: #BA3C97;">&gt;</span><span>funding_tenders</span><span style="color: #BA3C97;">&lt;/</span><span style="color: #F7768E;">source</span><span style="color: #BA3C97;">&gt;</span></span>
+<span class="giallo-l"><span style="color: #BA3C97;">  &lt;</span><span style="color: #F7768E;">programme</span><span style="color: #BA3C97;">&gt;</span><span>Horizon Europe</span><span style="color: #BA3C97;">&lt;/</span><span style="color: #F7768E;">programme</span><span style="color: #BA3C97;">&gt;</span></span>
+<span class="giallo-l"><span style="color: #BA3C97;">  &lt;</span><span style="color: #F7768E;">status</span><span style="color: #BA3C97;">&gt;</span><span>open</span><span style="color: #BA3C97;">&lt;/</span><span style="color: #F7768E;">status</span><span style="color: #BA3C97;">&gt;</span></span>
+<span class="giallo-l"><span style="color: #BA3C97;">  &lt;</span><span style="color: #F7768E;">deadline</span><span style="color: #BA3C97;">&gt;</span><span>2025-09-18</span><span style="color: #BA3C97;">&lt;/</span><span style="color: #F7768E;">deadline</span><span style="color: #BA3C97;">&gt;</span></span>
+<span class="giallo-l"><span style="color: #BA3C97;">  &lt;</span><span style="color: #F7768E;">url</span><span style="color: #BA3C97;">&gt;</span><span>{opportunity.url}</span><span style="color: #BA3C97;">&lt;/</span><span style="color: #F7768E;">url</span><span style="color: #BA3C97;">&gt;</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #BA3C97;">  &lt;</span><span style="color: #F7768E;">snippet</span><span style="color: #BB9AF7;"> section</span><span style="color: #F7768E;">=</span><span style="color: #89DDFF;">&quot;</span><span style="color: #9ECE6A;">scope</span><span style="color: #89DDFF;">&quot;</span><span style="color: #BA3C97;">&gt;</span></span>
+<span class="giallo-l"><span>    Projects should develop digital technologies for sustainable agriculture...</span></span>
+<span class="giallo-l"><span style="color: #BA3C97;">  &lt;/</span><span style="color: #F7768E;">snippet</span><span style="color: #BA3C97;">&gt;</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #BA3C97;">  &lt;</span><span style="color: #F7768E;">snippet</span><span style="color: #BB9AF7;"> section</span><span style="color: #F7768E;">=</span><span style="color: #89DDFF;">&quot;</span><span style="color: #9ECE6A;">eligibility</span><span style="color: #89DDFF;">&quot;</span><span style="color: #BA3C97;">&gt;</span></span>
+<span class="giallo-l"><span>    Proposals must be submitted by a consortium of at least three legal entities...</span></span>
+<span class="giallo-l"><span style="color: #BA3C97;">  &lt;/</span><span style="color: #F7768E;">snippet</span><span style="color: #BA3C97;">&gt;</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #BA3C97;">  &lt;</span><span style="color: #F7768E;">snippet</span><span style="color: #BB9AF7;"> section</span><span style="color: #F7768E;">=</span><span style="color: #89DDFF;">&quot;</span><span style="color: #9ECE6A;">expected_outcome</span><span style="color: #89DDFF;">&quot;</span><span style="color: #BA3C97;">&gt;</span></span>
+<span class="giallo-l"><span>    Proposals are expected to improve productivity and environmental performance...</span></span>
+<span class="giallo-l"><span style="color: #BA3C97;">  &lt;/</span><span style="color: #F7768E;">snippet</span><span style="color: #BA3C97;">&gt;</span></span>
+<span class="giallo-l"><span style="color: #BA3C97;">&lt;/</span><span style="color: #F7768E;">opportunity</span><span style="color: #BA3C97;">&gt;</span></span></code></pre>
+<p>Clear delimiters and explicit source structure are a simple way to improve the final answer.
+They also reduce hallucinations, because the model is less tempted to fill in missing fields from memory when the available fields are clearly defined.</p>
+<p>Still, source tags alone are not enough. The model should treat each source as evidence with boundaries, not as permission to complete the answer from memory. A citation is useful only if the cited text actually supports the sentence next to it.</p>
+<h3 id="the-final-answer-prompt">The final answer prompt</h3>
+<p>The final prompt should be strict.</p>
+<p>We are not asking the model to be creative. We are asking it to answer from retrieved sources.</p>
+<pre class="giallo" style="color: #AFBAD4; background-color: #1D1F29;"><code data-lang="typescript"><span class="giallo-l"><span style="color: #9D7CD8;font-style: italic;">const</span><span style="color: #BB9AF7;"> answerPrompt</span><span style="color: #89DDFF;"> = `</span></span>
+<span class="giallo-l"><span style="color: #9ECE6A;">You are helping users discover EU funding opportunities.</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #9ECE6A;">Answer the user&#39;s question using only the information inside &lt;sources&gt;.</span></span>
+<span class="giallo-l"><span style="color: #9ECE6A;">Do not use general knowledge or memory to complete missing details.</span></span>
+<span class="giallo-l"><span style="color: #9ECE6A;">If the sources are not enough, say what is missing.</span></span>
+<span class="giallo-l"><span style="color: #9ECE6A;">Do not invent eligibility, deadlines, budgets, funding rates, or requirements.</span></span>
+<span class="giallo-l"><span style="color: #9ECE6A;">Cite the relevant source URL for each recommendation, but only cite a source for claims it actually supports.</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #9ECE6A;">&lt;user_question&gt;</span></span>
+<span class="giallo-l"><span style="color: #7DCFFF;">${</span><span style="color: #C0CAF5;">userQuestion</span><span style="color: #7DCFFF;">}</span></span>
+<span class="giallo-l"><span style="color: #9ECE6A;">&lt;/user_question&gt;</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #9ECE6A;">&lt;sources&gt;</span></span>
+<span class="giallo-l"><span style="color: #7DCFFF;">${</span><span style="color: #C0CAF5;">contextXml</span><span style="color: #7DCFFF;">}</span></span>
+<span class="giallo-l"><span style="color: #9ECE6A;">&lt;/sources&gt;</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #9ECE6A;">Answer with this structure:</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #9ECE6A;">1. Short answer</span></span>
+<span class="giallo-l"><span style="color: #9ECE6A;">2. Best matches</span></span>
+<span class="giallo-l"><span style="color: #9ECE6A;">3. Why they match</span></span>
+<span class="giallo-l"><span style="color: #9ECE6A;">4. Eligibility and deadline checks</span></span>
+<span class="giallo-l"><span style="color: #9ECE6A;">5. Recommended next steps</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">`;</span></span></code></pre>
+<p>This is one of the most important parts of the system.</p>
+<p>If a deadline is not in the sources, the answer should not include a guessed deadline.
+If the eligibility section is missing, the answer should say that eligibility needs to be checked.</p>
+<p>This is less flashy than a confident answer, but it is much more useful.</p>
+<h3 id="a-realistic-example">A realistic example</h3>
+<p>Let's imagine the user asks:</p>
+<blockquote>
+<p>We are a Cyprus-based SME building an AI system that detects crop disease from satellite and drone images. We have a prototype and want to know if there are EU funding opportunities in the next 6 months.</p>
+</blockquote>
+<p>The rewritten query might be:</p>
+<blockquote>
+<p>Cyprus SME AI crop disease detection satellite drone imagery precision agriculture Earth observation Copernicus digital farming innovation funding next 6 months</p>
+</blockquote>
+<p>After searching Qdrant, grouping by opportunity, and reranking, the debug output could look like this:</p>
+<pre class="giallo" style="color: #AFBAD4; background-color: #1D1F29;"><code data-lang="json"><span class="giallo-l"><span style="color: #9ABDF5;">{</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">  &quot;</span><span style="color: #0DB9D7;">query_type</span><span style="color: #89DDFF;">&quot;: &quot;</span><span style="color: #9ECE6A;">discover_opportunities</span><span style="color: #89DDFF;">&quot;,</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">  &quot;</span><span style="color: #0DB9D7;">rewritten_query</span><span style="color: #89DDFF;">&quot;: &quot;</span><span style="color: #9ECE6A;">Cyprus SME AI crop disease detection satellite drone imagery precision agriculture Earth observation Copernicus digital farming innovation funding next 6 months</span><span style="color: #89DDFF;">&quot;,</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">  &quot;</span><span style="color: #0DB9D7;">filters</span><span style="color: #89DDFF;">&quot;:</span><span style="color: #9ABDF5;"> {</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">    &quot;</span><span style="color: #0DB9D7;">status</span><span style="color: #89DDFF;">&quot;:</span><span style="color: #9ABDF5;"> [</span><span style="color: #89DDFF;">&quot;</span><span style="color: #9ECE6A;">open</span><span style="color: #89DDFF;">&quot;, &quot;</span><span style="color: #9ECE6A;">upcoming</span><span style="color: #89DDFF;">&quot;</span><span style="color: #9ABDF5;">]</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">  }</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">  &quot;</span><span style="color: #0DB9D7;">retrieved_chunks</span><span style="color: #89DDFF;">&quot;:</span><span style="color: #FF9E64;"> 50</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">  &quot;</span><span style="color: #0DB9D7;">candidate_opportunities</span><span style="color: #89DDFF;">&quot;:</span><span style="color: #FF9E64;"> 12</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">  &quot;</span><span style="color: #0DB9D7;">reranked</span><span style="color: #89DDFF;">&quot;:</span><span style="color: #9ABDF5;"> [</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">    {</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">      &quot;</span><span style="color: #0DB9D7;">title</span><span style="color: #89DDFF;">&quot;: &quot;</span><span style="color: #9ECE6A;">Digital and data technologies for sustainable agriculture</span><span style="color: #89DDFF;">&quot;,</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">      &quot;</span><span style="color: #0DB9D7;">source</span><span style="color: #89DDFF;">&quot;: &quot;</span><span style="color: #9ECE6A;">funding_tenders</span><span style="color: #89DDFF;">&quot;,</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">      &quot;</span><span style="color: #0DB9D7;">score</span><span style="color: #89DDFF;">&quot;:</span><span style="color: #FF9E64;"> 5</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">      &quot;</span><span style="color: #0DB9D7;">reason</span><span style="color: #89DDFF;">&quot;: &quot;</span><span style="color: #9ECE6A;">Mentions digital technologies, data-driven farming and sustainable agriculture. Eligibility and consortium rules must be checked.</span><span style="color: #89DDFF;">&quot;</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">    }</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">    {</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">      &quot;</span><span style="color: #0DB9D7;">title</span><span style="color: #89DDFF;">&quot;: &quot;</span><span style="color: #9ECE6A;">Copernicus downstream applications for agri-food and environmental monitoring</span><span style="color: #89DDFF;">&quot;,</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">      &quot;</span><span style="color: #0DB9D7;">source</span><span style="color: #89DDFF;">&quot;: &quot;</span><span style="color: #9ECE6A;">funding_tenders</span><span style="color: #89DDFF;">&quot;,</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">      &quot;</span><span style="color: #0DB9D7;">score</span><span style="color: #89DDFF;">&quot;:</span><span style="color: #FF9E64;"> 4</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">      &quot;</span><span style="color: #0DB9D7;">reason</span><span style="color: #89DDFF;">&quot;: &quot;</span><span style="color: #9ECE6A;">Strong fit for satellite imagery and Earth observation, but the call may require specific consortium composition.</span><span style="color: #89DDFF;">&quot;</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">    }</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">    {</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">      &quot;</span><span style="color: #0DB9D7;">title</span><span style="color: #89DDFF;">&quot;: &quot;</span><span style="color: #9ECE6A;">Past KEEP.eu projects on precision farming and remote sensing</span><span style="color: #89DDFF;">&quot;,</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">      &quot;</span><span style="color: #0DB9D7;">source</span><span style="color: #89DDFF;">&quot;: &quot;</span><span style="color: #9ECE6A;">keep_eu</span><span style="color: #89DDFF;">&quot;,</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">      &quot;</span><span style="color: #0DB9D7;">score</span><span style="color: #89DDFF;">&quot;:</span><span style="color: #FF9E64;"> 3</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">      &quot;</span><span style="color: #0DB9D7;">reason</span><span style="color: #89DDFF;">&quot;: &quot;</span><span style="color: #9ECE6A;">Not a funding call, but useful to discover similar funded projects and possible partners.</span><span style="color: #89DDFF;">&quot;</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">    }</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">  ]</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">}</span></span></code></pre>
+<p>A good final answer could be:</p>
+<blockquote>
+<p>Short answer</p>
+<p>Yes, there are a few promising directions, but the best fit depends on whether you want to fund R&amp;D, a pilot deployment, or partner discovery.</p>
+<p>Best matches</p>
+<ol>
+<li>Digital and data technologies for sustainable agriculture</li>
+</ol>
+<p>This looks like the strongest match because the scope mentions digital farming, data-driven agricultural tools and sustainability outcomes.</p>
+<p>Why it matches:</p>
+<ul>
+<li>your project uses AI in agriculture</li>
+<li>the use case is related to crop monitoring and precision farming</li>
+<li>the opportunity is about digital technologies in the agri-food domain</li>
+</ul>
+<p>Checks:</p>
+<ul>
+<li>verify whether a Cyprus SME can participate directly</li>
+<li>verify whether a consortium is required</li>
+<li>check the expected TRL range</li>
+<li>deadline: 2025-09-18</li>
+</ul>
+<p>Source: Funding &amp; Tenders Portal, call page URL from the retrieved source</p>
+<ol start="2">
+<li>Copernicus downstream applications for agri-food and environmental monitoring</li>
+</ol>
+<p>This is relevant because the project uses satellite imagery and could fit an Earth observation or Copernicus downstream services angle.</p>
+<p>Checks:</p>
+<ul>
+<li>confirm whether drone imagery is within scope or only satellite data is accepted</li>
+<li>verify consortium requirements</li>
+<li>check whether the call is for R&amp;D or market deployment</li>
+</ul>
+<p>Source: Funding &amp; Tenders Portal, call page URL from the retrieved source</p>
+<ol start="3">
+<li>Similar KEEP.eu projects on precision farming and remote sensing</li>
+</ol>
+<p>These are not open calls, but they are useful for understanding what has been funded before and which organisations have worked in this space.</p>
+<p>Recommended next steps</p>
+<ul>
+<li>shortlist calls where SMEs are explicitly eligible</li>
+<li>check consortium requirements before spending time on a proposal</li>
+<li>use KEEP.eu results to identify previous projects and potential partners</li>
+<li>compare deadlines against the next 6 months</li>
+</ul>
+</blockquote>
+<p>The important thing is that the answer is useful but cautious.</p>
+<p>It does not say <code>you are eligible</code> unless the source says that.
+It does not invent a funding rate.
+It separates active funding opportunities from historical project data.
+That distinction matters a lot when mixing datasets like Funding &amp; Tenders and KEEP.eu.</p>
+<h3 id="filters-are-part-of-the-product">Filters are part of the product</h3>
+<p>Metadata filters are not just an implementation detail. They are part of the user experience.</p>
+<p>A user may ask:</p>
+<blockquote>
+<p>Show me open calls for SMEs in Cyprus.</p>
+</blockquote>
+<p>This should affect retrieval:</p>
+<pre class="giallo" style="color: #AFBAD4; background-color: #1D1F29;"><code data-lang="typescript"><span class="giallo-l"><span style="color: #9D7CD8;font-style: italic;">const</span><span style="color: #BB9AF7;"> filter</span><span style="color: #89DDFF;"> =</span><span style="color: #9ABDF5;"> {</span></span>
+<span class="giallo-l"><span style="color: #73DACA;">    must</span><span style="color: #89DDFF;">:</span><span style="color: #9ABDF5;"> [</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">        {</span><span style="color: #73DACA;"> key</span><span style="color: #89DDFF;">: &quot;</span><span style="color: #9ECE6A;">status</span><span style="color: #89DDFF;">&quot;,</span><span style="color: #73DACA;"> match</span><span style="color: #89DDFF;">:</span><span style="color: #9ABDF5;"> {</span><span style="color: #41A6B5;"> value</span><span style="color: #89DDFF;">: &quot;</span><span style="color: #9ECE6A;">open</span><span style="color: #89DDFF;">&quot;</span><span style="color: #9ABDF5;"> } }</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">    ]</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #73DACA;">    should</span><span style="color: #89DDFF;">:</span><span style="color: #9ABDF5;"> [</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">        {</span><span style="color: #73DACA;"> key</span><span style="color: #89DDFF;">: &quot;</span><span style="color: #9ECE6A;">applicant_types</span><span style="color: #89DDFF;">&quot;,</span><span style="color: #73DACA;"> match</span><span style="color: #89DDFF;">:</span><span style="color: #9ABDF5;"> {</span><span style="color: #41A6B5;"> any</span><span style="color: #89DDFF;">:</span><span style="color: #9ABDF5;"> [</span><span style="color: #89DDFF;">&quot;</span><span style="color: #9ECE6A;">SME</span><span style="color: #89DDFF;">&quot;</span><span style="color: #9ABDF5;">] } }</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">        {</span><span style="color: #73DACA;"> key</span><span style="color: #89DDFF;">: &quot;</span><span style="color: #9ECE6A;">countries</span><span style="color: #89DDFF;">&quot;,</span><span style="color: #73DACA;"> match</span><span style="color: #89DDFF;">:</span><span style="color: #9ABDF5;"> {</span><span style="color: #41A6B5;"> any</span><span style="color: #89DDFF;">:</span><span style="color: #9ABDF5;"> [</span><span style="color: #89DDFF;">&quot;</span><span style="color: #9ECE6A;">Cyprus</span><span style="color: #89DDFF;">&quot;, &quot;</span><span style="color: #9ECE6A;">EU Member States</span><span style="color: #89DDFF;">&quot;</span><span style="color: #9ABDF5;">] } }</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">    ]</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">}</span><span style="color: #89DDFF;">;</span></span></code></pre>
+<p>But we need to be careful.</p>
+<p>I am comfortable hard-filtering closed calls when the user asks for open opportunities.
+I am more careful hard-filtering by country or applicant type, because EU eligibility is often expressed indirectly.</p>
+<p>For example, a call might say:</p>
+<blockquote>
+<p>Legal entities established in EU Member States and associated countries are eligible.</p>
+</blockquote>
+<p>If our metadata extraction did not normalize this correctly to <code>Cyprus</code>, a hard country filter could remove a relevant call.</p>
+<p>So a practical approach is:</p>
+<ul>
+<li>hard filter on things we trust, like <code>status</code></li>
+<li>soft boost applicant type and geography</li>
+<li>make the final answer explain what needs to be checked</li>
+</ul>
+<p>This is also where I would be careful not to overbuild. If the database has a single canonical record per opportunity and the metadata is normalized well, explicit conflict detection may not add much. In many funding-discovery flows, reliable filters and source labels are enough. I would add conflict detection only when the system really ingests competing sources for the same fact, for example two deadlines for the same call or a programme page that disagrees with the portal.</p>
+<h3 id="chunking-matters-more-than-expected">Chunking matters more than expected</h3>
+<p>Naive chunking can produce strange results.</p>
+<p>If we split every 500 tokens, we might separate:</p>
+<ul>
+<li>the title from the scope</li>
+<li>the deadline from the eligibility section</li>
+<li>the expected outcome from the budget</li>
+<li>the consortium requirements from the type of action</li>
+</ul>
+<p>For funding data, it is better to chunk by document structure when possible.</p>
+<pre class="giallo" style="color: #AFBAD4; background-color: #1D1F29;"><code data-lang="typescript"><span class="giallo-l"><span style="color: #9D7CD8;font-style: italic;">const</span><span style="color: #BB9AF7;"> sections</span><span style="color: #89DDFF;"> =</span><span style="color: #9ABDF5;"> [</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">    &quot;</span><span style="color: #9ECE6A;">Objective</span><span style="color: #89DDFF;">&quot;,</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">    &quot;</span><span style="color: #9ECE6A;">Scope</span><span style="color: #89DDFF;">&quot;,</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">    &quot;</span><span style="color: #9ECE6A;">Expected Outcome</span><span style="color: #89DDFF;">&quot;,</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">    &quot;</span><span style="color: #9ECE6A;">Eligibility</span><span style="color: #89DDFF;">&quot;,</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">    &quot;</span><span style="color: #9ECE6A;">Budget</span><span style="color: #89DDFF;">&quot;,</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">    &quot;</span><span style="color: #9ECE6A;">Deadline</span><span style="color: #89DDFF;">&quot;,</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">    &quot;</span><span style="color: #9ECE6A;">Type of Action</span><span style="color: #89DDFF;">&quot;,</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">]</span><span style="color: #89DDFF;">;</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #BB9AF7;">for</span><span style="color: #9ABDF5;"> (</span><span style="color: #9D7CD8;font-style: italic;">const</span><span style="color: #BB9AF7;"> section</span><span style="color: #89DDFF;"> of</span><span style="color: #C0CAF5;"> extractedSections</span><span style="color: #9ABDF5;">) {</span></span>
+<span class="giallo-l"><span style="color: #9D7CD8;font-style: italic;">    const</span><span style="color: #BB9AF7;"> chunks</span><span style="color: #89DDFF;"> =</span><span style="color: #7AA2F7;"> splitSection</span><span style="color: #9ABDF5;">(</span><span style="color: #C0CAF5;">section</span><span style="color: #89DDFF;">.</span><span style="color: #7DCFFF;">text</span><span style="color: #89DDFF;">,</span><span style="color: #9ABDF5;"> {</span></span>
+<span class="giallo-l"><span style="color: #73DACA;">        maxTokens</span><span style="color: #89DDFF;">:</span><span style="color: #FF9E64;"> 700</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #73DACA;">        overlapTokens</span><span style="color: #89DDFF;">:</span><span style="color: #FF9E64;"> 120</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">    })</span><span style="color: #89DDFF;">;</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #BB9AF7;">    for</span><span style="color: #9ABDF5;"> (</span><span style="color: #9D7CD8;font-style: italic;">const</span><span style="color: #BB9AF7;"> chunk</span><span style="color: #89DDFF;"> of</span><span style="color: #C0CAF5;"> chunks</span><span style="color: #9ABDF5;">) {</span></span>
+<span class="giallo-l"><span style="color: #BB9AF7;font-style: italic;">        await</span><span style="color: #7AA2F7;"> storeChunk</span><span style="color: #9ABDF5;">({</span></span>
+<span class="giallo-l"><span style="color: #C0CAF5;">            opportunityId</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #73DACA;">            section</span><span style="color: #89DDFF;">:</span><span style="color: #C0CAF5;"> section</span><span style="color: #89DDFF;">.</span><span style="color: #7DCFFF;">name</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #73DACA;">            text</span><span style="color: #89DDFF;">:</span><span style="color: #C0CAF5;"> chunk</span><span style="color: #89DDFF;">.</span><span style="color: #7DCFFF;">text</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">        })</span><span style="color: #89DDFF;">;</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">    }</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">}</span></span></code></pre>
+<p>The section name becomes important metadata.</p>
+<p>If the user asks:</p>
+<blockquote>
+<p>Can my SME apply?</p>
+</blockquote>
+<p>then chunks from <code>eligibility</code> should be preferred.</p>
+<p>If the user asks:</p>
+<blockquote>
+<p>Is this about agriculture?</p>
+</blockquote>
+<p>then <code>scope</code> and <code>expected_outcome</code> are probably more useful.</p>
+<h3 id="use-different-retrieval-strategies-for-different-questions">Use different retrieval strategies for different questions</h3>
+<p>Not all questions need the same retrieval path.</p>
+<p>For example:</p>
+<ul>
+<li><code>Find calls for my project</code> needs broad retrieval and reranking</li>
+<li><code>Is this specific call relevant to me?</code> needs call-specific retrieval</li>
+<li><code>What is the deadline?</code> should prefer structured metadata</li>
+<li><code>Can I apply alone?</code> should retrieve eligibility sections first</li>
+<li><code>Who could we partner with?</code> may need KEEP.eu projects more than open calls</li>
+</ul>
+<p>A small classifier can help:</p>
+<pre class="giallo" style="color: #AFBAD4; background-color: #1D1F29;"><code data-lang="typescript"><span class="giallo-l"><span style="color: #BB9AF7;">type</span><span style="color: #C0CAF5;"> QueryType</span><span style="color: #89DDFF;"> =</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">    | &quot;</span><span style="color: #9ECE6A;">discover_opportunities</span><span style="color: #89DDFF;">&quot;</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">    | &quot;</span><span style="color: #9ECE6A;">compare_opportunities</span><span style="color: #89DDFF;">&quot;</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">    | &quot;</span><span style="color: #9ECE6A;">specific_opportunity_question</span><span style="color: #89DDFF;">&quot;</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">    | &quot;</span><span style="color: #9ECE6A;">deadline_or_budget</span><span style="color: #89DDFF;">&quot;</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">    | &quot;</span><span style="color: #9ECE6A;">eligibility_check</span><span style="color: #89DDFF;">&quot;</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">    | &quot;</span><span style="color: #9ECE6A;">partner_discovery</span><span style="color: #89DDFF;">&quot;;</span></span></code></pre>
+<p>Then we can choose a retrieval strategy.</p>
+<p>This feels like overengineering until you try to answer eligibility questions with the same retrieval flow you use for broad discovery.</p>
+<h3 id="keep-citations-attached-to-claims">Keep citations attached to claims</h3>
+<p>If the system recommends a call, it should include the source URL.</p>
+<p>Even better, claims should be traceable to a section.</p>
+<p>Bad:</p>
+<blockquote>
+<p>This call is relevant for AI agriculture projects.</p>
+</blockquote>
+<p>Better:</p>
+<blockquote>
+<p>This call is relevant because the scope mentions digital farming and data-driven agricultural tools.
+Source: Funding &amp; Tenders Portal, Scope section, {source_url}</p>
+</blockquote>
+<p>The payload should make that possible:</p>
+<pre class="giallo" style="color: #AFBAD4; background-color: #1D1F29;"><code data-lang="typescript"><span class="giallo-l"><span style="color: #C0CAF5;">payload</span><span style="color: #89DDFF;">:</span><span style="color: #9ABDF5;"> {</span></span>
+<span class="giallo-l"><span style="color: #C0CAF5;">    opportunity_id</span><span style="color: #89DDFF;">:</span><span style="color: #C0CAF5;"> opportunity</span><span style="color: #89DDFF;">.</span><span style="color: #7DCFFF;">id</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #C0CAF5;">    source</span><span style="color: #89DDFF;">:</span><span style="color: #C0CAF5;"> opportunity</span><span style="color: #89DDFF;">.</span><span style="color: #7DCFFF;">source</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #C0CAF5;">    source_url</span><span style="color: #89DDFF;">:</span><span style="color: #C0CAF5;"> opportunity</span><span style="color: #89DDFF;">.</span><span style="color: #7DCFFF;">url</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #C0CAF5;">    source_title</span><span style="color: #89DDFF;">:</span><span style="color: #C0CAF5;"> opportunity</span><span style="color: #89DDFF;">.</span><span style="color: #7DCFFF;">title</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #C0CAF5;">    section</span><span style="color: #89DDFF;">: &quot;</span><span style="color: #9ECE6A;">scope</span><span style="color: #89DDFF;">&quot;,</span></span>
+<span class="giallo-l"><span style="color: #C0CAF5;">    text</span><span style="color: #89DDFF;">:</span><span style="color: #C0CAF5;"> chunk</span><span style="color: #89DDFF;">.</span><span style="color: #7DCFFF;">text</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">}</span></span></code></pre>
+<p>This does not eliminate hallucinations entirely, but it gives the system a much better chance of staying grounded.
+It also gives users a way to verify the answer.</p>
+<h3 id="evaluation-should-start-simple">Evaluation should start simple</h3>
+<p>RAG systems are hard to judge by looking at one good answer.</p>
+<p>I like to keep a small set of test questions:</p>
+<pre class="giallo" style="color: #AFBAD4; background-color: #1D1F29;"><code data-lang="typescript"><span class="giallo-l"><span style="color: #9D7CD8;font-style: italic;">const</span><span style="color: #BB9AF7;"> evalQuestions</span><span style="color: #89DDFF;"> =</span><span style="color: #9ABDF5;"> [</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">    {</span></span>
+<span class="giallo-l"><span style="color: #73DACA;">        question</span><span style="color: #89DDFF;">:</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">            &quot;</span><span style="color: #9ECE6A;">We are an SME in Cyprus building AI tools for agriculture. What calls should we look at?</span><span style="color: #89DDFF;">&quot;,</span></span>
+<span class="giallo-l"><span style="color: #73DACA;">        expectedTopics</span><span style="color: #89DDFF;">:</span><span style="color: #9ABDF5;"> [</span><span style="color: #89DDFF;">&quot;</span><span style="color: #9ECE6A;">agriculture</span><span style="color: #89DDFF;">&quot;, &quot;</span><span style="color: #9ECE6A;">AI</span><span style="color: #89DDFF;">&quot;, &quot;</span><span style="color: #9ECE6A;">SME</span><span style="color: #89DDFF;">&quot;</span><span style="color: #9ABDF5;">]</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">    }</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">    {</span></span>
+<span class="giallo-l"><span style="color: #73DACA;">        question</span><span style="color: #89DDFF;">: &quot;</span><span style="color: #9ECE6A;">Are there open calls for digital education platforms?</span><span style="color: #89DDFF;">&quot;,</span></span>
+<span class="giallo-l"><span style="color: #73DACA;">        expectedTopics</span><span style="color: #89DDFF;">:</span><span style="color: #9ABDF5;"> [</span><span style="color: #89DDFF;">&quot;</span><span style="color: #9ECE6A;">education</span><span style="color: #89DDFF;">&quot;, &quot;</span><span style="color: #9ECE6A;">digital</span><span style="color: #89DDFF;">&quot;, &quot;</span><span style="color: #9ECE6A;">open</span><span style="color: #89DDFF;">&quot;</span><span style="color: #9ABDF5;">]</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">    }</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">    {</span></span>
+<span class="giallo-l"><span style="color: #73DACA;">        question</span><span style="color: #89DDFF;">: &quot;</span><span style="color: #9ECE6A;">Can a startup apply alone or do we need a consortium?</span><span style="color: #89DDFF;">&quot;,</span></span>
+<span class="giallo-l"><span style="color: #73DACA;">        expectedSections</span><span style="color: #89DDFF;">:</span><span style="color: #9ABDF5;"> [</span><span style="color: #89DDFF;">&quot;</span><span style="color: #9ECE6A;">eligibility</span><span style="color: #89DDFF;">&quot;</span><span style="color: #9ABDF5;">]</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">    }</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">    {</span></span>
+<span class="giallo-l"><span style="color: #73DACA;">        question</span><span style="color: #89DDFF;">: &quot;</span><span style="color: #9ECE6A;">Who has received funding before for remote sensing in agriculture?</span><span style="color: #89DDFF;">&quot;,</span></span>
+<span class="giallo-l"><span style="color: #73DACA;">        expectedSources</span><span style="color: #89DDFF;">:</span><span style="color: #9ABDF5;"> [</span><span style="color: #89DDFF;">&quot;</span><span style="color: #9ECE6A;">keep_eu</span><span style="color: #89DDFF;">&quot;</span><span style="color: #9ABDF5;">]</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">    }</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">]</span><span style="color: #89DDFF;">;</span></span></code></pre>
+<p>For each question, I want to inspect:</p>
+<ul>
+<li>did retrieval find the right opportunities?</li>
+<li>did reranking choose the right ones?</li>
+<li>did the final answer cite sources?</li>
+<li>did the model avoid unsupported claims?</li>
+<li>did it say what is uncertain?</li>
+</ul>
+<p>At first, manual evaluation is enough. Later, this can become more systematic.</p>
+<p>A useful debug output is:</p>
+<pre class="giallo" style="color: #AFBAD4; background-color: #1D1F29;"><code data-lang="json"><span class="giallo-l"><span style="color: #9ABDF5;">{</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">  &quot;</span><span style="color: #0DB9D7;">question</span><span style="color: #89DDFF;">&quot;: &quot;</span><span style="color: #9ECE6A;">We are an SME in Cyprus building AI tools for agriculture. What calls should we look at?</span><span style="color: #89DDFF;">&quot;,</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">  &quot;</span><span style="color: #0DB9D7;">rewritten_query</span><span style="color: #89DDFF;">&quot;: &quot;</span><span style="color: #9ECE6A;">SME Cyprus artificial intelligence agriculture precision farming EU funding</span><span style="color: #89DDFF;">&quot;,</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">  &quot;</span><span style="color: #0DB9D7;">filters</span><span style="color: #89DDFF;">&quot;:</span><span style="color: #9ABDF5;"> {</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">    &quot;</span><span style="color: #0DB9D7;">status</span><span style="color: #89DDFF;">&quot;:</span><span style="color: #9ABDF5;"> [</span><span style="color: #89DDFF;">&quot;</span><span style="color: #9ECE6A;">open</span><span style="color: #89DDFF;">&quot;, &quot;</span><span style="color: #9ECE6A;">upcoming</span><span style="color: #89DDFF;">&quot;</span><span style="color: #9ABDF5;">]</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">  }</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">  &quot;</span><span style="color: #0DB9D7;">top_results</span><span style="color: #89DDFF;">&quot;:</span><span style="color: #9ABDF5;"> [</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">    {</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">      &quot;</span><span style="color: #0DB9D7;">title</span><span style="color: #89DDFF;">&quot;: &quot;</span><span style="color: #9ECE6A;">Digital and data technologies for sustainable agriculture</span><span style="color: #89DDFF;">&quot;,</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">      &quot;</span><span style="color: #0DB9D7;">score</span><span style="color: #89DDFF;">&quot;:</span><span style="color: #FF9E64;"> 5</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">      &quot;</span><span style="color: #0DB9D7;">sections</span><span style="color: #89DDFF;">&quot;:</span><span style="color: #9ABDF5;"> [</span><span style="color: #89DDFF;">&quot;</span><span style="color: #9ECE6A;">scope</span><span style="color: #89DDFF;">&quot;, &quot;</span><span style="color: #9ECE6A;">eligibility</span><span style="color: #89DDFF;">&quot;, &quot;</span><span style="color: #9ECE6A;">expected_outcome</span><span style="color: #89DDFF;">&quot;</span><span style="color: #9ABDF5;">]</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #89DDFF;">      &quot;</span><span style="color: #0DB9D7;">source</span><span style="color: #89DDFF;">&quot;: &quot;</span><span style="color: #9ECE6A;">funding_tenders</span><span style="color: #89DDFF;">&quot;</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">    }</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">  ]</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">}</span></span></code></pre>
+<p>This makes the system easier to improve.</p>
+<h3 id="the-full-flow">The full flow</h3>
+<p>Putting it all together, the practical flow looks like this:</p>
+<pre class="giallo" style="color: #AFBAD4; background-color: #1D1F29;"><code data-lang="plain"><span class="giallo-l"><span>User question</span></span>
+<span class="giallo-l"><span>   |</span></span>
+<span class="giallo-l"><span>   v</span></span>
+<span class="giallo-l"><span>Classify question type</span></span>
+<span class="giallo-l"><span>   |</span></span>
+<span class="giallo-l"><span>   v</span></span>
+<span class="giallo-l"><span>Rewrite question for search</span></span>
+<span class="giallo-l"><span>   |</span></span>
+<span class="giallo-l"><span>   v</span></span>
+<span class="giallo-l"><span>Build metadata filters</span></span>
+<span class="giallo-l"><span>   |</span></span>
+<span class="giallo-l"><span>   v</span></span>
+<span class="giallo-l"><span>Search Qdrant for candidate chunks</span></span>
+<span class="giallo-l"><span>   |</span></span>
+<span class="giallo-l"><span>   v</span></span>
+<span class="giallo-l"><span>Group chunks by opportunity</span></span>
+<span class="giallo-l"><span>   |</span></span>
+<span class="giallo-l"><span>   v</span></span>
+<span class="giallo-l"><span>Rerank candidate opportunities</span></span>
+<span class="giallo-l"><span>   |</span></span>
+<span class="giallo-l"><span>   v</span></span>
+<span class="giallo-l"><span>Build structured source context</span></span>
+<span class="giallo-l"><span>   |</span></span>
+<span class="giallo-l"><span>   v</span></span>
+<span class="giallo-l"><span>Generate answer with citations</span></span>
+<span class="giallo-l"><span>   |</span></span>
+<span class="giallo-l"><span>   v</span></span>
+<span class="giallo-l"><span>Return answer + source links + uncertainty</span></span></code></pre>
+<p>In code, roughly:</p>
+<pre class="giallo" style="color: #AFBAD4; background-color: #1D1F29;"><code data-lang="typescript"><span class="giallo-l"><span style="color: #9D7CD8;font-style: italic;">async</span><span style="color: #BB9AF7;"> function</span><span style="color: #7AA2F7;"> answerFundingQuestion</span><span style="color: #9ABDF5;">(</span><span style="color: #E0AF68;">userQuestion</span><span style="color: #89DDFF;">:</span><span style="color: #0DB9D7;"> string</span><span style="color: #9ABDF5;">) {</span></span>
+<span class="giallo-l"><span style="color: #9D7CD8;font-style: italic;">    const</span><span style="color: #BB9AF7;"> queryType</span><span style="color: #89DDFF;"> =</span><span style="color: #BB9AF7;font-style: italic;"> await</span><span style="color: #7AA2F7;"> classifyQuery</span><span style="color: #9ABDF5;">(</span><span style="color: #C0CAF5;">userQuestion</span><span style="color: #9ABDF5;">)</span><span style="color: #89DDFF;">;</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #9D7CD8;font-style: italic;">    const</span><span style="color: #BB9AF7;"> rewrittenQuery</span><span style="color: #89DDFF;"> =</span><span style="color: #BB9AF7;font-style: italic;"> await</span><span style="color: #7AA2F7;"> rewriteForSearch</span><span style="color: #9ABDF5;">(</span><span style="color: #C0CAF5;">userQuestion</span><span style="color: #9ABDF5;">)</span><span style="color: #89DDFF;">;</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #9D7CD8;font-style: italic;">    const</span><span style="color: #BB9AF7;"> filter</span><span style="color: #89DDFF;"> =</span><span style="color: #7AA2F7;"> buildFilter</span><span style="color: #9ABDF5;">(</span><span style="color: #C0CAF5;">userQuestion</span><span style="color: #89DDFF;">,</span><span style="color: #C0CAF5;"> queryType</span><span style="color: #9ABDF5;">)</span><span style="color: #89DDFF;">;</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #9D7CD8;font-style: italic;">    const</span><span style="color: #BB9AF7;"> candidates</span><span style="color: #89DDFF;"> =</span><span style="color: #BB9AF7;font-style: italic;"> await</span><span style="color: #7AA2F7;"> retrieveCandidates</span><span style="color: #9ABDF5;">({</span></span>
+<span class="giallo-l"><span style="color: #73DACA;">        query</span><span style="color: #89DDFF;">:</span><span style="color: #C0CAF5;"> rewrittenQuery</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #C0CAF5;">        filter</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #73DACA;">        limit</span><span style="color: #89DDFF;">:</span><span style="color: #FF9E64;"> 50</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">    })</span><span style="color: #89DDFF;">;</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #9D7CD8;font-style: italic;">    const</span><span style="color: #BB9AF7;"> grouped</span><span style="color: #89DDFF;"> =</span><span style="color: #7AA2F7;"> groupByOpportunity</span><span style="color: #9ABDF5;">(</span><span style="color: #C0CAF5;">candidates</span><span style="color: #9ABDF5;">)</span><span style="color: #89DDFF;">;</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #9D7CD8;font-style: italic;">    const</span><span style="color: #BB9AF7;"> ranked</span><span style="color: #89DDFF;"> =</span><span style="color: #BB9AF7;font-style: italic;"> await</span><span style="color: #7AA2F7;"> rerankOpportunities</span><span style="color: #9ABDF5;">({</span></span>
+<span class="giallo-l"><span style="color: #C0CAF5;">        userQuestion</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #73DACA;">        candidates</span><span style="color: #89DDFF;">:</span><span style="color: #C0CAF5;"> grouped</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">    })</span><span style="color: #89DDFF;">;</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #9D7CD8;font-style: italic;">    const</span><span style="color: #BB9AF7;"> context</span><span style="color: #89DDFF;"> =</span><span style="color: #7AA2F7;"> buildContextXml</span><span style="color: #9ABDF5;">(</span><span style="color: #C0CAF5;">ranked</span><span style="color: #89DDFF;">.</span><span style="color: #7AA2F7;">slice</span><span style="color: #9ABDF5;">(</span><span style="color: #FF9E64;">0</span><span style="color: #89DDFF;">,</span><span style="color: #FF9E64;"> 5</span><span style="color: #9ABDF5;">))</span><span style="color: #89DDFF;">;</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #9D7CD8;font-style: italic;">    const</span><span style="color: #BB9AF7;"> answer</span><span style="color: #89DDFF;"> =</span><span style="color: #BB9AF7;font-style: italic;"> await</span><span style="color: #7AA2F7;"> generateAnswer</span><span style="color: #9ABDF5;">({</span></span>
+<span class="giallo-l"><span style="color: #C0CAF5;">        userQuestion</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #C0CAF5;">        context</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">    })</span><span style="color: #89DDFF;">;</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #BB9AF7;font-style: italic;">    return</span><span style="color: #9ABDF5;"> {</span></span>
+<span class="giallo-l"><span style="color: #C0CAF5;">        answer</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #73DACA;">        sources</span><span style="color: #89DDFF;">:</span><span style="color: #C0CAF5;"> ranked</span><span style="color: #89DDFF;">.</span><span style="color: #7AA2F7;">map</span><span style="color: #9ABDF5;">((</span><span style="color: #E0AF68;">r</span><span style="color: #9ABDF5;">)</span><span style="color: #BB9AF7;"> =&gt;</span><span style="color: #C0CAF5;"> r</span><span style="color: #89DDFF;">.</span><span style="color: #7DCFFF;">url</span><span style="color: #9ABDF5;">)</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #73DACA;">        debug</span><span style="color: #89DDFF;">:</span><span style="color: #9ABDF5;"> {</span></span>
+<span class="giallo-l"><span style="color: #C0CAF5;">            queryType</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #C0CAF5;">            rewrittenQuery</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #73DACA;">            retrieved</span><span style="color: #89DDFF;">:</span><span style="color: #C0CAF5;"> candidates</span><span style="color: #89DDFF;">.</span><span style="color: #7DCFFF;">length</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #73DACA;">            ranked</span><span style="color: #89DDFF;">:</span><span style="color: #C0CAF5;"> ranked</span><span style="color: #89DDFF;">.</span><span style="color: #7DCFFF;">length</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">        }</span><span style="color: #89DDFF;">,</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">    }</span><span style="color: #89DDFF;">;</span></span>
+<span class="giallo-l"><span style="color: #9ABDF5;">}</span></span></code></pre><h3 id="what-i-would-not-do">What I would not do</h3>
+<p>There are a few tempting shortcuts I would avoid.</p>
+<h3 id="i-would-not-let-the-model-answer-from-memory">I would not let the model answer from memory</h3>
+<p>For funding discovery, this is too risky.</p>
+<p>Deadlines, eligibility rules and programme details change. The model should answer from retrieved sources or say that the sources are not enough.</p>
+<h3 id="i-would-not-use-vector-search-alone">I would not use vector search alone</h3>
+<p>Vector search is useful, but funding discovery also needs metadata, filtering, grouping, reranking and citations.</p>
+<h3 id="i-would-not-hide-uncertainty">I would not hide uncertainty</h3>
+<p>A good answer should say things like:</p>
+<blockquote>
+<p>This appears relevant, but you should verify consortium requirements and national eligibility rules.</p>
+</blockquote>
+<p>That is not a weakness. That is the correct behavior.</p>
+<h3 id="i-would-not-treat-all-datasets-as-the-same-thing">I would not treat all datasets as the same thing</h3>
+<p>The official Funding &amp; Tenders Portal and KEEP.eu answer different questions.</p>
+<p>Funding &amp; Tenders is useful for open and upcoming opportunities.
+KEEP.eu is useful for historical projects, programme patterns and partner discovery.</p>
+<p>Mixing them without labeling the source can produce very confusing answers.</p>
+<h3 id="outro">Outro</h3>
+<p>RAG is often described as <code>chat with your documents</code>, but for EU funding discovery that is not quite enough.</p>
+<p>The useful product is closer to a decision-support system:</p>
+<ul>
+<li>retrieve relevant opportunities</li>
+<li>explain why they match</li>
+<li>separate active calls from historical project data</li>
+<li>highlight missing eligibility checks</li>
+<li>cite source material</li>
+<li>avoid pretending to know what is not in the data</li>
+</ul>
+<p>Qdrant is a good fit for the retrieval layer because it lets us combine embeddings with metadata filtering. But the quality of the system comes from the parts around it: document structure, query rewriting, grouping by opportunity, reranking, careful prompting and evaluation.</p>
+<p>The final goal is not to replace the expert. It is to reduce the amount of repetitive research needed before an expert can make a good decision.</p>
+<p>That is where RAG works best: not as magic, but as a practical interface over messy knowledge.</p>
+ 
+    </main>
+
+    <footer>
+      <div class="icons">
+        <a aria-label="cv" href="/cv/"><svg xmlns="http://www.w3.org/2000/svg" class="icon" viewBox="0 0 384 512"><!--!Font Awesome Free 6.7.2 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free Copyright 2025 Fonticons, Inc.--><path fill="currentColor" d="M64 0C28.7 0 0 28.7 0 64v384c0 35.3 28.7 64 64 64h256c35.3 0 64-28.7 64-64V160H256c-17.7 0-32-14.3-32-32V0H64zm192 0v128h128L256 0zM112 256h160c8.8 0 16 7.2 16 16s-7.2 16-16 16H112c-8.8 0-16-7.2-16-16s7.2-16 16-16zm0 64h160c8.8 0 16 7.2 16 16s-7.2 16-16 16H112c-8.8 0-16-7.2-16-16s7.2-16 16-16zm0 64h160c8.8 0 16 7.2 16 16s-7.2 16-16 16H112c-8.8 0-16-7.2-16-16s7.2-16 16-16z"/></svg></a>
+        <a target="_blank" ref="noreferrer" aria-label="github" href="https://github.com/ksnll"><svg xmlns="http://www.w3.org/2000/svg" class="icon" viewBox="0 0 496 512"><!--!Font Awesome Free 6.7.2 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free Copyright 2025 Fonticons, Inc.--><path fill="currentColor" d="M165.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3 .3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6zm-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5 .3-6.2 2.3zm44.2-1.7c-2.9 .7-4.9 2.6-4.6 4.9 .3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9zM244.8 8C106.1 8 0 113.3 0 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C428.2 457.8 496 362.9 496 252 496 113.3 383.5 8 244.8 8zM97.2 352.9c-1.3 1-1 3.3 .7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1zm-10.8-8.1c-.7 1.3 .3 2.9 2.3 3.9 1.6 1 3.6 .7 4.3-.7 .7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3 .7zm32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3 .7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1zm-11.4-14.7c-1.6 1-1.6 3.6 0 5.9 1.6 2.3 4.3 3.3 5.6 2.3 1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2z"/></svg></a>
+        <a target="_blank" ref="noreferrer" aria-label="linkedin" href="https://www.linkedin.com/in/federico-blancato-86139a84/"><svg xmlns="http://www.w3.org/2000/svg" class="icon" viewBox="0 0 448 512"><!--!Font Awesome Free 6.7.2 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free Copyright 2025 Fonticons, Inc.--><path fill="currentColor" d="M416 32H31.9C14.3 32 0 46.5 0 64.3v383.4C0 465.5 14.3 480 31.9 480H416c17.6 0 32-14.5 32-32.3V64.3c0-17.8-14.4-32.3-32-32.3zM135.4 416H69V202.2h66.5V416zm-33.2-243c-21.3 0-38.5-17.3-38.5-38.5S80.9 96 102.2 96c21.2 0 38.5 17.3 38.5 38.5 0 21.3-17.2 38.5-38.5 38.5zm282.1 243h-66.4V312c0-24.8-.5-56.7-34.5-56.7-34.6 0-39.9 27-39.9 54.9V416h-66.4V202.2h63.7v29.2h.9c8.9-16.8 30.6-34.5 62.9-34.5 67.2 0 79.7 44.3 79.7 101.9V416z"/></svg></a>
+        <a target="_blank" ref="noreferrer" aria-label="email" href="mailto:kaosone@gmail.com"><svg xmlns="http://www.w3.org/2000/svg" class="icon" viewBox="0 0 512 512"><!--!Font Awesome Free 6.7.2 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free Copyright 2025 Fonticons, Inc.--><path fill="currentColor" d="M48 64C21.5 64 0 85.5 0 112c0 15.1 7.1 29.3 19.2 38.4L236.8 313.6c11.4 8.5 27 8.5 38.4 0L492.8 150.4c12.1-9.1 19.2-23.3 19.2-38.4c0-26.5-21.5-48-48-48L48 64zM0 176L0 384c0 35.3 28.7 64 64 64l384 0c35.3 0 64-28.7 64-64l0-208L294.4 339.2c-22.8 17.1-54 17.1-76.8 0L0 176z"/></svg></a>
+      </div>
+      <span class="copy">&copy; 2025 - Federico Blancato</span>
+    </footer>
+  </body>
+</html>
