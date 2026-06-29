@@ -237,6 +237,14 @@ body {
   -webkit-text-size-adjust: 100%;
 }
 
+table {
+  width: 100%;
+  text-align: left;
+  border: 1px solid #333;
+  padding: 20px;
+  line-height: 1.5em;
+}
+
 @media (min-device-width: 320px) and (max-device-width: 768px) {
   body {
     max-width: 90%;
